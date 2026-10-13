@@ -32,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as config_mod
 import core
+import notify
 import reaper
 
 # Re-exported so existing callers (and tests/test_lanes.py) can keep reaching
@@ -206,6 +207,11 @@ class Handler(BaseHTTPRequestHandler):
                 # Activity signal for the idle reaper: a toggle-on counts as
                 # Thrash-mediated use of the lane from this moment on.
                 core.touch_activity(req.get("id"))
+                # Background watch: notify when the lane finishes loading.
+                # notify.watch_lane_load() spawns a daemon thread and is a
+                # no-op when on_load is disabled or the lane is unknown —
+                # it never blocks or raises into the request.
+                notify.watch_lane_load(req.get("id"))
             self._json(200, {"ok": ok, "message": msg, "status": core.get_status()})
         elif self.path == "/api/uzu-chat":
             self._proxy_uzu_chat()
@@ -292,6 +298,15 @@ if __name__ == "__main__":
         cfg = core.idle_unload_cfg()
         print(f"reaper: on — unload after {cfg.get('ttl_minutes')}min idle "
               f"(lanes={cfg.get('lanes')})", flush=True)
+    # Low-memory notifications: started ONLY when running as the server,
+    # never on import (same rule as the reaper — tests import this module
+    # and must not spawn threads).
+    _notifier = None
+    if core.CFG["notifications"]["on_low_memory"]:
+        _notifier = notify.start_low_memory_watch()
+        print(f"notify: on — alert below "
+              f"{core.CFG['notifications'].get('low_memory_gb')}GB free",
+              flush=True)
     try:
         srv = ThreadingHTTPServer((core.HOST, core.PORT), Handler)
         print(f"thrash server on {core.HOST}:{core.PORT}", flush=True)
@@ -301,3 +316,5 @@ if __name__ == "__main__":
     finally:
         if _reaper is not None:
             _reaper.stop()
+        if _notifier is not None:
+            _notifier.stop()
