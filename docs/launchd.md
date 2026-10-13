@@ -1,4 +1,4 @@
-# Running ModelDeck at login (launchd)
+# Running Thrash at login (launchd)
 
 The control server is a long-running process. Start it at login with a launchd
 agent.
@@ -9,14 +9,14 @@ path). The server starts with just the example config if you don't — a local
 file is only needed to override the defaults.
 
 ```bash
-mkdir -p ~/.modeldeck          # launchd will not create the log directory
+mkdir -p ~/.thrash          # launchd will not create the log directory
 ```
 
-Save this as `~/Library/LaunchAgents/com.modeldeck.server.plist`, editing the
+Save this as `~/Library/LaunchAgents/com.thrash.server.plist`, editing the
 paths for your machine, then:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.modeldeck.server.plist
+launchctl load ~/Library/LaunchAgents/com.thrash.server.plist
 ```
 
 ```xml
@@ -25,25 +25,25 @@ launchctl load ~/Library/LaunchAgents/com.modeldeck.server.plist
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.modeldeck.server</string>
+    <string>com.thrash.server</string>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/YOU/projects/modeldeck/server/modeldeck_server.py</string>
+        <string>/Users/YOU/projects/thrash/server/thrash_server.py</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/YOU/projects/modeldeck</string>
+    <string>/Users/YOU/projects/thrash</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/YOU/.modeldeck/server.log</string>
+    <string>/Users/YOU/.thrash/server.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/YOU/.modeldeck/server.log</string>
+    <string>/Users/YOU/.thrash/server.log</string>
 </dict>
 </plist>
 ```
 
-For the menu-bar app, add `/Applications/ModelDeck.app` to
+For the menu-bar app, add `/Applications/Thrash.app` to
 **System Settings → General → Login Items**.

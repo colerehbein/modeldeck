@@ -129,8 +129,8 @@ async function go(){
     // surface the real proxy error (502 detail); fall back to the connectivity
     // hint for genuine network failures where no message was constructed
     const msg = (e && e.message && /proxy error/.test(e.message))
-      ? e.message + ' — is the uzu lane up? (uzu-9b-lane start, or flip the switch in ModelDeck)'
-      : 'cannot reach the uzu lane (via the modeldeck proxy) — is it up? (uzu-9b-lane start, or flip the switch in ModelDeck)';
+      ? e.message + ' — is the uzu lane up? (uzu-9b-lane start, or flip the switch in Thrash)'
+      : 'cannot reach the uzu lane (via the thrash proxy) — is it up? (uzu-9b-lane start, or flip the switch in Thrash)';
     b.body.textContent=msg;
     b.meta.textContent='';
   }

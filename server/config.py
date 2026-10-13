@@ -1,5 +1,5 @@
 """
-config.py — ModelDeck configuration loader.
+config.py — Thrash configuration loader.
 
 Loads config/config.example.json as the base, then overlays
 config/config.local.json (gitignored) if present, via a recursive merge so a

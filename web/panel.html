@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ModelDeck</title>
+<title>Thrash</title>
 <style>
 :root{
   --bg:#eef0f3; --panel:#ffffff; --ink:#16181d; --muted:#6b7280;
@@ -86,7 +86,7 @@ footer{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:16px
 <body>
 
 <header>
-  <h1>MODELDECK</h1>
+  <h1>THRASH</h1>
   <span class="srv" id="srv"><span class="dot"></span><span id="srvtxt">connecting…</span></span>
 </header>
 
@@ -133,7 +133,7 @@ async function refresh(){
   }catch(e){
     document.getElementById('srv').className='srv down';
     document.getElementById('srvtxt').textContent='server down';
-    msg('cannot reach the modeldeck server — is it running?', true);
+    msg('cannot reach the thrash server — is it running?', true);
   }
 }
 

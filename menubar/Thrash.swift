@@ -1,18 +1,18 @@
 //
-//  ModelDeck — a menu-bar control for local model lanes.
-//  Talks to the modeldeck server (default 127.0.0.1:8790).
+//  Thrash — a menu-bar control for local model lanes.
+//  Talks to the thrash server (default 127.0.0.1:8790).
 //
-//  Build:  ./build.sh        (compiles to ~/.local/bin/ModelDeck + installs .app)
-//  Run:    ~/.local/bin/ModelDeck   (LSUIElement app, no dock icon)
+//  Build:  ./build.sh        (compiles to ~/.local/bin/Thrash + installs .app)
+//  Run:    ~/.local/bin/Thrash   (LSUIElement app, no dock icon)
 //
 //  Config via env:
-//    MODELDECK_API   base URL of the server (default http://127.0.0.1:8790)
+//    THRASH_API   base URL of the server (default http://127.0.0.1:8790)
 //
 
 import AppKit
 import Foundation
 
-let apiBase = ProcessInfo.processInfo.environment["MODELDECK_API"] ?? "http://127.0.0.1:8790"
+let apiBase = ProcessInfo.processInfo.environment["THRASH_API"] ?? "http://127.0.0.1:8790"
 
 struct Lane: Decodable {
     let id: String
@@ -132,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let ref = NSMenuItem(title: "Refresh", action: #selector(doRefresh(_:)), keyEquivalent: "r")
         ref.target = self
         menu.addItem(ref)
-        let quit = NSMenuItem(title: "Quit ModelDeck", action: #selector(NSApplication.terminate(_:)),
+        let quit = NSMenuItem(title: "Quit Thrash", action: #selector(NSApplication.terminate(_:)),
                               keyEquivalent: "q")
         menu.addItem(quit)
 

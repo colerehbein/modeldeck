@@ -1,4 +1,4 @@
-# ModelDeck
+# Thrash
 
 A local control panel + macOS menu-bar app for on-demand local LLM lanes.
 One switch per model — turn lanes on and off, watch RAM, and chat with the
@@ -12,7 +12,7 @@ side by side, but the lane system is generic: any executable exposing
 
 - **Control panel** (`web/panel.html`) — a switch per lane, live RAM, one-click
   start/stop, and a link into the streaming chat.
-- **Menu-bar app** (`menubar/ModelDeck.swift`) — the same lanes in your menu
+- **Menu-bar app** (`menubar/Thrash.swift`) — the same lanes in your menu
   bar, with an at-a-glance free-memory readout.
 - **Streaming chat** (`web/uzu-chat.html`) — a minimal chat that talks straight
   to the uzu lane with a tiny prompt, so you see full speculative-decoding
@@ -23,12 +23,12 @@ side by side, but the lane system is generic: any executable exposing
 ## Architecture
 
 ```
-server/modeldeck_server.py   stdlib HTTP control backend (the source of truth)
+server/thrash_server.py   stdlib HTTP control backend (the source of truth)
 server/config.py             config loader
 lanes/*.sh                   one start/stop/status script per model lane
 web/panel.html               control panel UI
 web/uzu-chat.html            streaming chat UI
-menubar/ModelDeck.swift      native menu-bar app (AppKit)
+menubar/Thrash.swift      native menu-bar app (AppKit)
 menubar/build.sh             compiles the binary + .app bundle
 config/config.example.json   every machine-specific value lives here
 ```
@@ -48,7 +48,7 @@ $EDITOR config/config.local.json   # set your model paths, ports, ramtoggle path
 
 # 3. (optional) build + launch the menu-bar app
 ./menubar/build.sh
-open -a ModelDeck
+open -a Thrash
 ```
 
 Then open <http://127.0.0.1:8790> for the panel.

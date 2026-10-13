@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-modeldeck_server.py — local control backend for the ModelDeck panel + menu bar.
+thrash_server.py — local control backend for the Thrash panel + menu bar.
 
 One small stdlib HTTP server that unifies every local model lane behind a
 single JSON API, so the HTML panel and the Swift menu bar app both talk to the
@@ -24,7 +24,7 @@ Lane control:
   - ramtoggle lanes -> `ramtoggle on|off <id>`, status via `ramtoggle --json`
 
 Stdlib only. Run under launchd (see docs/launchd.md) or directly:
-    python3 server/modeldeck_server.py
+    python3 server/thrash_server.py
 """
 import json
 import os
@@ -53,7 +53,7 @@ def _load_asset(key, fallback_title):
     return f"<html><body><h1>{fallback_title}</h1><p>asset missing</p></body></html>"
 
 
-PANEL_HTML = _load_asset("panel", "ModelDeck")
+PANEL_HTML = _load_asset("panel", "Thrash")
 UZU_CHAT_HTML = _load_asset("uzu_chat", "uzu chat")
 
 
@@ -274,5 +274,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"modeldeck server on {HOST}:{PORT}", flush=True)
+    print(f"thrash server on {HOST}:{PORT}", flush=True)
     srv.serve_forever()

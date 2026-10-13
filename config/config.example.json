@@ -1,5 +1,5 @@
 {
-  "_comment": "ModelDeck configuration. Copy to config.local.json and edit for your machine. config.local.json is gitignored.",
+  "_comment": "Thrash configuration. Copy to config.local.json and edit for your machine. config.local.json is gitignored.",
 
   "server": {
     "host": "127.0.0.1",

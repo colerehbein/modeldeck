@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Build the ModelDeck menu-bar app from menubar/ModelDeck.swift.
+# Build the Thrash menu-bar app from menubar/Thrash.swift.
 # Produces:
-#   ~/.local/bin/ModelDeck          (bare binary, for running directly)
-#   /Applications/ModelDeck.app     (bundle, for LaunchServices / open -a)
+#   ~/.local/bin/Thrash          (bare binary, for running directly)
+#   /Applications/Thrash.app     (bundle, for LaunchServices / open -a)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$REPO/menubar/ModelDeck.swift"
-BIN="$HOME/.local/bin/ModelDeck"
-APP="/Applications/ModelDeck.app"
-APPBIN="$APP/Contents/MacOS/ModelDeck"
+SRC="$REPO/menubar/Thrash.swift"
+BIN="$HOME/.local/bin/Thrash"
+APP="/Applications/Thrash.app"
+APPBIN="$APP/Contents/MacOS/Thrash"
 
 [ -f "$SRC" ] || { echo "missing $SRC" >&2; exit 1; }
 mkdir -p "$HOME/.local/bin" "$APP/Contents/MacOS"
@@ -27,11 +27,11 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>ModelDeck</string>
+    <string>Thrash</string>
     <key>CFBundleDisplayName</key>
-    <string>ModelDeck</string>
+    <string>Thrash</string>
     <key>CFBundleIdentifier</key>
-    <string>com.cole.modeldeck.app</string>
+    <string>com.cole.thrash.app</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
@@ -39,7 +39,7 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>ModelDeck</string>
+    <string>Thrash</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
@@ -53,4 +53,4 @@ PLIST
 touch "$APP"
 
 echo "=== done ==="
-echo "  run: open -a ModelDeck   (or $BIN)"
+echo "  run: open -a Thrash   (or $BIN)"
