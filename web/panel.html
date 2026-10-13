@@ -149,19 +149,26 @@ const pending = {};   // id -> {want:bool, since:epoch_ms}
 const pollers = {};   // id -> interval handle (guards against duplicate pollers)
 
 // ---- log viewer -------------------------------------------------------
-// /api/logs may not be deployed yet; probe once on load so the button
-// goes inert instead of every click failing.
+// /api/logs may not be deployed yet; probe once (with a real lane id, so a
+// working server doesn't 404 on a fake id) after the first status load, so
+// the button goes inert instead of every click failing.
 let LOGS_BROKEN = true;
 let logLines = 300;              // selected tail length
 let logLane = null;              // {id,label} currently open
 let logState = 'idle';           // idle | loading | ok | missing | error
+let logsProbed = false;
 
-(function probeLogs(){
-  fetch(API+'/api/logs?id=__probe__&lines=1')
+function probeLogs(){
+  if(logsProbed) return;
+  const lanes = (window.DATA && DATA.lanes) || [];
+  if(!lanes.length) return;      // wait until status has populated lanes
+  logsProbed = true;
+  const probeId = encodeURIComponent(lanes[0].id);
+  fetch(API+'/api/logs?id='+probeId+'&lines=1')
     .then(r=>{ LOGS_BROKEN = !r.ok; })
     .catch(()=>{ LOGS_BROKEN = true; })
     .finally(()=>{ try{ render(); }catch(e){} });
-})();
+}
 
 function esc(s){return (s||"").replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 function msg(t,err){const e=document.getElementById('msg');e.textContent=t;e.className=err?'err':''}
@@ -174,6 +181,7 @@ async function refresh(){
     document.getElementById('srv').className='srv';
     document.getElementById('srvtxt').textContent='live';
     render();
+    probeLogs();
   }catch(e){
     document.getElementById('srv').className='srv down';
     document.getElementById('srvtxt').textContent='server down';

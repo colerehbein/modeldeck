@@ -23,10 +23,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ser
 _local = os.environ.get("THRASH_CONFIG_LOCAL")
 if _local:
     # Point the config loader at an alternate local config BEFORE core
-    # imports it (core calls config.load() at import time).
+    # imports it (core calls config.load() at import time). Fail loudly if
+    # the path is wrong — silently falling back to the machine's real
+    # config would break the isolation this override exists to provide.
     import config as _config_mod
     from pathlib import Path
-    _config_mod.LOCAL = Path(os.path.expanduser(_local))
+    _resolved = Path(os.path.expanduser(_local))
+    if not _resolved.is_file():
+        sys.stderr.write(
+            f"thrash: THRASH_CONFIG_LOCAL not found: {_local}\n")
+        raise SystemExit(2)
+    _config_mod.LOCAL = _resolved
 
 import core
 
@@ -116,18 +123,41 @@ def cmd_toggle(lane_id):
 
 
 def cmd_logs(argv):
-    lane_id = argv[0] if argv else None
+    # Parse: <id> [--lines N | --lines=N], flags may appear in any order.
+    lane_id = None
+    lines = 40
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--lines":
+            if i + 1 >= len(argv):
+                print("usage: thrash logs <id> [--lines N]", file=sys.stderr)
+                return 2
+            try:
+                lines = int(argv[i + 1])
+            except ValueError:
+                print("usage: thrash logs <id> [--lines N]", file=sys.stderr)
+                return 2
+            i += 2
+        elif a.startswith("--lines="):
+            try:
+                lines = int(a[len("--lines="):])
+            except ValueError:
+                print("usage: thrash logs <id> [--lines N]", file=sys.stderr)
+                return 2
+            i += 1
+        elif a.startswith("-"):
+            print(f"unknown flag: {a}", file=sys.stderr)
+            return 2
+        elif lane_id is None:
+            lane_id = a
+            i += 1
+        else:
+            print(f"unexpected argument: {a}", file=sys.stderr)
+            return 2
     if lane_id is None:
         print(USAGE, file=sys.stderr)
         return 2
-    lines = 40
-    if "--lines" in argv:
-        i = argv.index("--lines")
-        try:
-            lines = int(argv[i + 1])
-        except (IndexError, ValueError):
-            print("usage: thrash logs <id> [--lines N]", file=sys.stderr)
-            return 2
     lane = find_lane(lane_id)
     if lane is None:
         print(f"unknown lane: {lane_id}", file=sys.stderr)

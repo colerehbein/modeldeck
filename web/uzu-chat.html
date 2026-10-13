@@ -143,9 +143,13 @@ async function go(){
   const t0=performance.now();
   let content='', reasoning='', toks=0, spec=0;
   const lane=laneSel.value||'uzu-9b';
+  // use the selected lane's model id when /api/config provided one, else the
+  // default (keeps single-lane fallback working when config is unavailable)
+  const laneObj=lanes.find(l=>l.id===lane);
+  const model=(laneObj&&laneObj.model)||MODEL;
   try{
     const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:MODEL,lane,messages:[{role:'user',content:text}],
+      body:JSON.stringify({model,lane,messages:[{role:'user',content:text}],
         max_tokens:2048,temperature:0.6,stream:true})});
     // fetch resolves on HTTP errors too — surface the proxy's real error
     if(!r.ok){

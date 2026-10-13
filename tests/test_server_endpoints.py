@@ -19,7 +19,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
     from tests import helpers
@@ -252,10 +252,10 @@ class ConfigEndpointTest(ServerEndpointTestCase):
         self.assertEqual([l["id"] for l in body["lanes"]], ["a", "b"])
         self.assertEqual(body["lanes"][0], {
             "id": "a", "label": "A", "port": 8801,
-            "kind": "script", "approx_mb": 1000})
+            "kind": "script", "approx_mb": 1000, "model": None})
         self.assertEqual(body["lanes"][1], {
             "id": "b", "label": "B", "port": 8802,
-            "kind": "ramtoggle", "approx_mb": None})
+            "kind": "ramtoggle", "approx_mb": None, "model": None})
 
     def test_uzu_port_from_configured_proxy_lane(self):
         core.UZU_PROXY_LANE = "uzu"
@@ -279,6 +279,131 @@ class ConfigEndpointTest(ServerEndpointTestCase):
         status, body = self.get("/api/config")
         self.assertEqual(status, 200)
         self.assertEqual(body["panel_port"], 4321)
+
+
+class _Upstream:
+    """A tiny raw-socket server standing in for a lane's OpenAI endpoint.
+
+    Accepts one connection per request, reads the headers, replies with a
+    short SSE body, then closes the socket — so the proxy's read-until-EOF
+    loop terminates promptly. Records each hit so a test can assert which
+    lane the chat proxy forwarded to.
+    """
+
+    def __init__(self):
+        import socket
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(8)
+        self._sock.settimeout(5)
+        self.port = self._sock.getsockname()[1]
+        self.hits = []
+        self._stop = False
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        while not self._stop:
+            try:
+                conn, _ = self._sock.accept()
+            except OSError:
+                break
+            try:
+                conn.settimeout(5)
+                data = b""
+                while b"\r\n\r\n" not in data:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                # read any body advertised by Content-Length
+                head, _, rest = data.partition(b"\r\n\r\n")
+                clen = 0
+                for line in head.split(b"\r\n"):
+                    if line.lower().startswith(b"content-length:"):
+                        clen = int(line.split(b":", 1)[1].strip())
+                while len(rest) < clen:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    rest += chunk
+                self.hits.append(head.split(b"\r\n")[0])
+                body = (b"HTTP/1.0 200 OK\r\nContent-Type: text/event-stream\r\n"
+                        b"Connection: close\r\n\r\n"
+                        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                        b"data: [DONE]\n\n")
+                conn.sendall(body)
+            except OSError:
+                pass
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+    def close(self):
+        self._stop = True
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        self._thread.join(timeout=5)
+
+
+class ChatProxyRoutingTest(ServerEndpointTestCase):
+    """The chat proxy must forward to the lane named in the POST body."""
+
+    def setUp(self):
+        super().setUp()
+        self._orig_uzu = core.UZU_PROXY_LANE
+        self.up_a = _Upstream()
+        self.up_b = _Upstream()
+        core.SCRIPT_LANES = {
+            "laneA": {"id": "laneA", "label": "A", "kind": "script",
+                      "port": self.up_a.port, "approx_mb": 100,
+                      "impact": "", "script": "x"},
+            "laneB": {"id": "laneB", "label": "B", "kind": "script",
+                      "port": self.up_b.port, "approx_mb": 100,
+                      "impact": "", "script": "x"},
+        }
+        core.UZU_PROXY_LANE = "laneA"  # default target when no lane given
+
+    def tearDown(self):
+        core.UZU_PROXY_LANE = self._orig_uzu
+        self.up_a.close()
+        self.up_b.close()
+        super().tearDown()
+
+    def _post_chat(self, payload):
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self.base + "/api/uzu-chat", data=data, method="POST",
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def test_forwards_to_named_lane(self):
+        status, _ = self._post_chat(
+            {"lane": "laneB", "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.up_b.hits), 1, "laneB should have been hit")
+        self.assertEqual(len(self.up_a.hits), 0, "default laneA must NOT be hit")
+
+    def test_defaults_to_proxy_lane_without_lane_field(self):
+        status, _ = self._post_chat(
+            {"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.up_a.hits), 1, "proxy lane should be the default")
+
+    def test_unknown_lane_is_400(self):
+        status, body = self._post_chat(
+            {"lane": "does-not-exist", "messages": []})
+        self.assertEqual(status, 400)
+        self.assertIn("unknown", json.loads(body.decode())["error"])
 
 
 if __name__ == "__main__":

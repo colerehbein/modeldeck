@@ -213,21 +213,37 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def _proxy_uzu_chat(self):
-        """Stream-proxy to the configured uzu lane (SSE passthrough + CORS)."""
-        port = core.uzu_proxy_port()
-        if not port:
-            self._json(502, {"error": "no uzu_proxy_lane configured"})
-            return
+        """Stream-proxy to a chosen lane's OpenAI endpoint (SSE + CORS).
+
+        The POST body may name a ``lane`` (a configured script-lane id) or a
+        ``port``; when present and valid the proxy targets that lane instead
+        of the configured ``uzu_proxy_lane``. This is what lets the chat UI
+        talk to any loaded lane, not just the uzu default. The ``model``
+        field is passed through untouched.
+        """
         body = self._read_body()
         if body is None:
             return
         if not body:
             body = b"{}"
+        lane_id = None
+        try:
+            lane_id = json.loads(body).get("lane")
+        except (json.JSONDecodeError, AttributeError):
+            lane_id = None
+        port = core.chat_lane_port(lane_id)
+        if port is None:
+            # lane_id was given but unknown/invalid -> 400; absent -> default
+            if lane_id:
+                self._json(400, {"error": f"unknown or non-script lane: {lane_id}"})
+            else:
+                self._json(502, {"error": "no uzu_proxy_lane configured"})
+            return
         upstream = None
         headers_sent = False
         # Activity signal for the idle reaper: a proxied chat message counts
-        # as use of the uzu lane, so it does not get reaped mid-conversation.
-        core.touch_activity(core.UZU_PROXY_LANE)
+        # as use of the target lane, so it does not get reaped mid-conversation.
+        core.touch_activity(lane_id or core.UZU_PROXY_LANE)
         try:
             rreq = urllib.request.Request(
                 f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -238,10 +254,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
+            # SSE is close-delimited (no Content-Length): the stream ends when
+            # this handler returns and the socket closes, so advertise close
+            # rather than keep-alive — otherwise a client waits for more.
+            self.send_header("Connection", "close")
             self._cors()
             self.end_headers()
             headers_sent = True
+            self.close_connection = True
             while True:
                 chunk = upstream.read(1024)
                 if not chunk:

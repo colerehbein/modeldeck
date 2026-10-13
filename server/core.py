@@ -126,6 +126,11 @@ def project_start(lane):
 # A log file larger than this is read by seeking to the tail instead of
 # slurping the whole thing, so a multi-GB lane log cannot blow up memory.
 _LOG_TAIL_READ_THRESHOLD = 5 * 1024 * 1024
+# Hard ceiling on bytes the seek path will read, independent of line count:
+# with pathologically long lines the block-doubling below would otherwise
+# grow until it holds `lines` newlines, which can mean the whole (multi-GB)
+# file. Stop here and return the last ~this-many bytes' worth of lines.
+_LOG_TAIL_MAX_BYTES = 32 * 1024 * 1024
 _LOG_MAX_LINES = 5000
 _LOG_DEFAULT_LINES = 200
 
@@ -193,6 +198,10 @@ def read_log_tail(lane_id, lines=_LOG_DEFAULT_LINES):
                     chunks = data.split(b"\n")
                     if len(chunks) > lines + 1 or start == 0:
                         break
+                    # Cap the read so a log of very long lines can't make us
+                    # grow the block to the whole (multi-GB) file.
+                    if block >= _LOG_TAIL_MAX_BYTES:
+                        break
                     block *= 2
                 # split gives one more element than line breaks; the first
                 # is empty when the block starts at a line boundary.
@@ -223,6 +232,7 @@ def api_config():
             "port": l.get("port"),
             "kind": l.get("kind", "script"),
             "approx_mb": l.get("approx_mb"),
+            "model": l.get("model"),  # optional per-lane model id for the chat
         } for l in SCRIPT_LANES.values()],
     }
 
@@ -281,6 +291,21 @@ def uzu_proxy_port():
     if not UZU_PROXY_LANE:
         return None
     lane = SCRIPT_LANES.get(UZU_PROXY_LANE)
+    return lane.get("port") if lane else None
+
+
+def chat_lane_port(lane_id=None):
+    """Resolve the port the chat proxy should target.
+
+    With no ``lane_id`` (or None) this returns the configured uzu_proxy_lane's
+    port (backward compatible). With a ``lane_id`` it returns that script
+    lane's port, or None if the id is unknown — so the caller can 400 on a
+    bad lane vs 502 on a missing default. Only script lanes are valid targets
+    (ramtoggle lanes aren't OpenAI-servable by us).
+    """
+    if not lane_id:
+        return uzu_proxy_port()
+    lane = SCRIPT_LANES.get(lane_id)
     return lane.get("port") if lane else None
 
 
