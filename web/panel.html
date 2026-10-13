@@ -114,9 +114,10 @@ footer{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:16px
 </footer>
 
 <script>
-const API = "http://127.0.0.1:8790";
+const API = location.origin;   // same-origin as this page — follows config port
 let DATA = null;
 const pending = {};   // id -> {want:bool, since:epoch_ms}
+const pollers = {};   // id -> interval handle (guards against duplicate pollers)
 
 function esc(s){return (s||"").replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 function msg(t,err){const e=document.getElementById('msg');e.textContent=t;e.className=err?'err':''}
@@ -132,23 +133,28 @@ async function refresh(){
   }catch(e){
     document.getElementById('srv').className='srv down';
     document.getElementById('srvtxt').textContent='server down';
-    msg('cannot reach :8790 — is modeldeck running?', true);
+    msg('cannot reach the modeldeck server — is it running?', true);
   }
 }
 
 function render(){
   const m = DATA.memory||{};
-  const avail=m.available_mb||0, total=m.total_mb||1, pct=Math.round(avail/total*100);
-  const low = pct < 20;
+  const hasTotal = m.total_mb && m.total_mb > 0;
+  const avail=m.available_mb||0, total=hasTotal?m.total_mb:1, pct=hasTotal?Math.round(avail/total*100):0;
+  const low = hasTotal && pct < 20;   // only warn when we actually know the total
   const mem=document.getElementById('mem');
   mem.className='mem'+(low?' low':'');
-  document.getElementById('memavail').innerHTML=
-    `${(avail/1024).toFixed(1)}<small> / ${(total/1024).toFixed(0)} GB free</small>`;
+  // build the free/total line without innerHTML — all numeric or known-safe
+  const ma=document.getElementById('memavail');
+  ma.textContent = (avail/1024).toFixed(1);
+  const small=document.createElement('small');
+  small.textContent = hasTotal ? ` / ${(total/1024).toFixed(0)} GB free` : ' — memory unknown';
+  ma.appendChild(small);
   document.getElementById('memverdict').textContent =
-    low? 'low — free a lane' : (pct<45? 'ok':'comfortable');
+    !hasTotal ? '—' : (low? 'low — free a lane' : (pct<45? 'ok':'comfortable'));
   document.getElementById('memfill').style.width=pct+'%';
   document.getElementById('memsub').textContent =
-    `wired ${((m.wired_mb||0)/1024).toFixed(1)} GB · compressed ${((m.compressed_mb||0)/1024).toFixed(1)} GB · ${pct}% available`;
+    `wired ${((m.wired_mb||0)/1024).toFixed(1)} GB · compressed ${((m.compressed_mb||0)/1024).toFixed(1)} GB · ${hasTotal?pct+'%':'?'} available`;
 
   const box=document.getElementById('lanes'); box.innerHTML='';
   (DATA.lanes||[]).forEach(l=>{
@@ -164,25 +170,37 @@ function render(){
     div.className='lane '+state;
     const disabled = state==='loading' ? 'disabled' : '';
     const checked = (state==='on' || (state==='loading'&&p&&p.want)) ? 'checked':'';
-    div.innerHTML=`
-      <div>
-        <div class="nm">${esc(l.label)}
-          <span class="pill">${state==='loading'?'loading':state}</span></div>
-        <div class="meta">:${l.port||'—'} · ~${ram} when on · ${esc(l.kind)}</div>
-        <div class="impact">${esc(l.impact)}</div>
-      </div>
-      <div class="ctl">
-        <label class="sw ${state==='loading'?'loading':''}">
-          <input type="checkbox" ${checked} ${disabled}
-            onchange="toggleLane('${esc(l.id)}', this.checked)">
-          <span class="sl"></span>
-        </label>
-        <span class="st ${state}">${state==='loading'?'…':state}</span>
-      </div>`;
+    const info=document.createElement('div');
+    const nm=document.createElement('div'); nm.className='nm';
+    nm.textContent = l.label || l.id;
+    const pill=document.createElement('span'); pill.className='pill';
+    pill.textContent = state==='loading'?'loading':state;
+    nm.appendChild(pill);
+    const meta=document.createElement('div'); meta.className='meta';
+    meta.textContent = `:${l.port||'—'} · ~${ram} when on · ${l.kind||''}`;
+    const impact=document.createElement('div'); impact.className='impact';
+    impact.textContent = l.impact || '';
+    info.appendChild(nm); info.appendChild(meta); info.appendChild(impact);
+
+    const ctl=document.createElement('div'); ctl.className='ctl';
+    const label=document.createElement('label'); label.className='sw '+(state==='loading'?'loading':'');
+    const input=document.createElement('input'); input.type='checkbox';
+    if(checked) input.checked=true;
+    if(disabled) input.disabled=true;
+    // event listener (not an inline string handler) — lane ids can't inject JS
+    input.addEventListener('change', e=>toggleLane(l.id, e.target.checked));
+    const sl=document.createElement('span'); sl.className='sl';
+    label.appendChild(input); label.appendChild(sl);
+    const st=document.createElement('span'); st.className='st '+state;
+    st.textContent = state==='loading'?'…':state;
+    ctl.appendChild(label); ctl.appendChild(st);
+
+    div.appendChild(info); div.appendChild(ctl);
     box.appendChild(div);
   });
+  const lanes = DATA.lanes||[];
   document.getElementById('foot').textContent =
-    `${DATA.lanes.length} lanes · updated ${new Date((DATA.ts||0)*1000).toLocaleTimeString()}`;
+    `${lanes.length} lanes · updated ${new Date((DATA.ts||0)*1000).toLocaleTimeString()}`;
 }
 
 async function toggleLane(id, on){
@@ -200,18 +218,24 @@ async function toggleLane(id, on){
 }
 
 function pollUntilSettled(id, want){
+  const existing = pollers[id];
+  if(existing && existing.want === want) return;   // already polling for this target
+  if(existing){ clearInterval(existing.iv); }        // target changed — replace the poller
   let tries=0;
-  const iv=setInterval(async()=>{
+  const rec={want, iv:null};
+  const done=()=>{ if(pollers[id]===rec){ clearInterval(rec.iv); delete pollers[id]; } delete pending[id]; };
+  rec.iv=setInterval(async()=>{
     tries++;
     try{
       const r=await fetch(API+'/api/status'); DATA=await r.json();
       const lane=(DATA.lanes||[]).find(l=>l.id===id);
       if(!lane || lane.on===want || tries>20){
-        clearInterval(iv); delete pending[id]; render();
+        done(); render();
         if(lane&&lane.on===want) msg(`${id} ${want?'up':'stopped'}`);
       } else render();
-    }catch(e){ if(tries>20){clearInterval(iv);delete pending[id];} }
+    }catch(e){ if(tries>20){done();} }
   }, 4000);
+  pollers[id]=rec;
 }
 
 async function freeAll(){

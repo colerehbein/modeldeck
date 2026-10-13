@@ -1,8 +1,19 @@
 # Running ModelDeck at login (launchd)
 
 The control server is a long-running process. Start it at login with a launchd
-agent. Save this as `~/Library/LaunchAgents/com.modeldeck.server.plist`, editing
-the paths for your machine, then:
+agent.
+
+**Recommended:** copy `config/config.example.json` to `config/config.local.json`
+and edit it for machine-specific overrides (model paths, ports, the `ramtoggle`
+path). The server starts with just the example config if you don't — a local
+file is only needed to override the defaults.
+
+```bash
+mkdir -p ~/.modeldeck          # launchd will not create the log directory
+```
+
+Save this as `~/Library/LaunchAgents/com.modeldeck.server.plist`, editing the
+paths for your machine, then:
 
 ```bash
 launchctl load ~/Library/LaunchAgents/com.modeldeck.server.plist
@@ -20,6 +31,8 @@ launchctl load ~/Library/LaunchAgents/com.modeldeck.server.plist
         <string>/usr/bin/python3</string>
         <string>/Users/YOU/projects/modeldeck/server/modeldeck_server.py</string>
     </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/YOU/projects/modeldeck</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

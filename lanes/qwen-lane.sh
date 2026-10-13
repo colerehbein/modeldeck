@@ -19,8 +19,9 @@ is_up() { curl -sf --max-time 3 "http://127.0.0.1:${PORT}/v1/models" >/dev/null 
 case "${1:-}" in
   start)
     if is_up; then echo "already up on :${PORT}"; exit 0; fi
+    mkdir -p "$(dirname "$LOG")"
     # memory guard: refuse to load if the box is already tight
-    FREE=$(memory_pressure 2>/dev/null | awk '/free percentage/ {gsub("%","",$NF); print 100-$NF}')
+    FREE=$( { memory_pressure 2>/dev/null || true; } | awk '/free percentage/ {gsub("%","",$NF); print $NF}')
     if [ -n "${FREE:-}" ] && [ "$FREE" -lt 25 ]; then
       echo "WARNING: only ${FREE}% memory headroom — loading 20GB may thrash. Free some RAM first." >&2
     fi
@@ -33,7 +34,7 @@ case "${1:-}" in
       >>"$LOG" 2>&1
     ;;
   stop)
-    pkill -f "llama-server.*${PORT}" 2>/dev/null && echo "stopped" || echo "not running"
+    pkill -f "llama-server .*--port[= ]${PORT}([^0-9]|$)" 2>/dev/null && echo "stopped" || echo "not running"
     ;;
   status)
     if is_up; then

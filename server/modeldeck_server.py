@@ -60,29 +60,22 @@ UZU_CHAT_HTML = _load_asset("uzu_chat", "uzu chat")
 def run(cmd, timeout=30):
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, (p.stdout or "") + (p.stderr or "")
+        return p.returncode, p.stdout or "", p.stderr or ""
     except Exception as e:  # noqa: BLE001
-        return 1, str(e)
-
-
-def port_up(port):
-    if not port:
-        return False
-    rc, out = run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], timeout=10)
-    return rc == 0 and str(port) in out
+        return 1, "", str(e)
 
 
 def script_lane_on(lane):
     """Ask the lane script for ground truth (on-demand servers may be down)."""
-    rc, out = run([lane["script"], "status"], timeout=15)
-    return "UP" in out
+    rc, out, _ = run([lane["script"], "status"], timeout=15)
+    return any(line.strip().startswith("UP") for line in out.splitlines())
 
 
 def ramtoggle_status():
     """Return (lanes, memory) from ramtoggle --json, or ([], {}) if unavailable."""
     if not RAMTOGGLE:
         return [], {}
-    rc, out = run([RAMTOGGLE, "--json"], timeout=30)
+    rc, out, _ = run([RAMTOGGLE, "--json"], timeout=30)
     if rc != 0:
         return [], {}
     try:
@@ -121,20 +114,32 @@ def toggle(lane_id, turn_on):
     if lane_id in SCRIPT_LANES:
         script = SCRIPT_LANES[lane_id]["script"]
         if turn_on:
-            # start blocks while the model loads; spawn detached
-            subprocess.Popen(
-                [script, "start"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+            # start blocks while the model loads; spawn detached, then verify
+            # the process actually launched (a failed exec is otherwise silent).
+            try:
+                proc = subprocess.Popen(
+                    [script, "start"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as e:
+                # missing / non-executable script — Popen raises before poll()
+                return False, f"{lane_id} failed to start: {e}"
+            time.sleep(0.5)
+            if proc.poll() is not None:
+                return False, (f"{lane_id} failed to start (exit {proc.returncode}) "
+                               "— see the lane log")
             return True, f"{lane_id} starting (loads in background)"
-        rc, out = run([script, "stop"], timeout=20)
-        return rc == 0, out.strip()
+        rc, out, err = run([script, "stop"], timeout=20)
+        return rc == 0, (out.strip() or err.strip() or f"stop exited {rc}")
     if RAMTOGGLE:
+        rt_lanes, _ = ramtoggle_status()
+        if lane_id not in {l["id"] for l in rt_lanes}:
+            return False, f"unknown lane: {lane_id}"
         action = "on" if turn_on else "off"
-        rc, out = run([RAMTOGGLE, action, lane_id], timeout=60)
-        return rc == 0, out.strip()
-    return False, f"unknown lane: {lane_id}"
+        rc, out, err = run([RAMTOGGLE, action, lane_id], timeout=60)
+        return rc == 0, (out.strip() or err.strip() or f"ramtoggle exited {rc}")
+    return False, f"unknown lane: {lane_id} (no ramtoggle configured)"
 
 
 def uzu_proxy_port():
@@ -176,8 +181,23 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+    def _read_body(self, max_bytes=10 * 1024 * 1024):
+        """Read and return the request body, or None after sending an error."""
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self._json(400, {"error": "bad content-length"})
+            return None
+        if n < 0:
+            self._json(400, {"error": "bad content-length"})
+            return None
+        if n > max_bytes:
+            self._json(413, {"error": "request too large"})
+            return None
+        return self.rfile.read(n) if n else b""
+
     def do_GET(self):
-        path = self.path.rstrip("/") or "/"
+        path = self.path.rstrip("/")
         if path == "/api/status":
             self._json(200, get_status())
         elif path == "/api/health":
@@ -191,9 +211,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/toggle":
-            n = int(self.headers.get("Content-Length", 0))
+            body = self._read_body()
+            if body is None:
+                return
             try:
-                req = json.loads(self.rfile.read(n) or b"{}")
+                req = json.loads(body or b"{}")
             except json.JSONDecodeError:
                 self._json(400, {"error": "bad json"})
                 return
@@ -210,8 +232,13 @@ class Handler(BaseHTTPRequestHandler):
         if not port:
             self._json(502, {"error": "no uzu_proxy_lane configured"})
             return
-        n = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(n) or b"{}"
+        body = self._read_body()
+        if body is None:
+            return
+        if not body:
+            body = b"{}"
+        upstream = None
+        headers_sent = False
         try:
             rreq = urllib.request.Request(
                 f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -225,18 +252,24 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "keep-alive")
             self._cors()
             self.end_headers()
+            headers_sent = True
             while True:
                 chunk = upstream.read(1024)
                 if not chunk:
                     break
                 self.wfile.write(chunk)
                 self.wfile.flush()
-            upstream.close()
         except Exception as e:  # noqa: BLE001
-            try:
+            # Once headers are committed we cannot send a real error response;
+            # just stop. Otherwise report the lane as unreachable.
+            if not headers_sent:
                 self._json(502, {"error": f"uzu lane unreachable: {e}"})
-            except OSError:
-                pass
+        finally:
+            if upstream is not None:
+                try:
+                    upstream.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 if __name__ == "__main__":

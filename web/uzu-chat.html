@@ -50,7 +50,7 @@ button:disabled{opacity:.4;cursor:wait}
   <button id="send">Send</button>
 </div>
 <script>
-const API="http://127.0.0.1:8790/api/uzu-chat";
+const API=location.origin+'/api/uzu-chat';
 const MODEL="alibaba:qwen3.5:9b:mirai:mirai-m:4";
 const chat=document.getElementById('chat'), inp=document.getElementById('in'),
       send=document.getElementById('send'), speedEl=document.getElementById('lastspeed');
@@ -72,27 +72,45 @@ async function go(){
   send.disabled=true;
   const b=add('bot'); b.body.textContent='…'; b.meta.textContent='streaming';
   const t0=performance.now();
-  let content='', reasoning='', toks=0, spec=0, showedThinking=false;
+  let content='', reasoning='', toks=0, spec=0;
   try{
     const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:MODEL,messages:[{role:'user',content:text}],
         max_tokens:2048,temperature:0.6,stream:true})});
+    // fetch resolves on HTTP errors too — surface the proxy's real error
+    if(!r.ok){
+      let detail='';
+      try{ const j=await r.json(); detail=j.error||''; }catch(e){}
+      throw new Error('proxy error ('+r.status+(detail?': '+detail:'')+')');
+    }
     const reader=r.body.getReader(), dec=new TextDecoder();
     let buf='';
     while(true){
       const {done,value}=await reader.read();
       if(done) break;
       buf+=dec.decode(value,{stream:true});
-      const lines=buf.split('\n'); buf=lines.pop();
+      const lines=buf.split(/\r?\n/); buf=lines.pop();  // handle CRLF
       for(const line of lines){
         if(!line.startsWith('data:')) continue;
         const payload=line.slice(5).trim();
         if(payload==='[DONE]') continue;
         let j; try{ j=JSON.parse(payload); }catch(e){ continue; }
         const delta=j.choices?.[0]?.delta||{};
-        if(delta.reasoning_content){ reasoning+=delta.reasoning_content; toks++; }
+        // reasoning tokens are NOT answer tokens. Prefer the upstream usage
+        // total, then subtract reasoning so the reported rate is answer-only;
+        // if that metric is unavailable we count streamed content deltas.
+        if(delta.reasoning_content){ reasoning+=delta.reasoning_content; }
         if(delta.content){ content+=delta.content; toks++; }
-        if(j.usage){ toks=j.usage.completion_tokens||toks; spec=j.usage.spec_verify_ct||spec; }
+        if(j.usage){
+          spec=j.usage.spec_verify_ct||spec;
+          // completion_tokens includes reasoning on reasoning models
+          const rc = j.usage.completion_tokens_details
+            ? (j.usage.completion_tokens_details.reasoning_tokens||0) : null;
+          if(j.usage.completion_tokens!=null){
+            toks = (rc!=null) ? Math.max(0, j.usage.completion_tokens - rc)
+                              : j.usage.completion_tokens;
+          }
+        }
         // show thinking (dim) then the answer as it streams
         let display='';
         if(reasoning && !content) display='💭 '+reasoning;
@@ -104,11 +122,16 @@ async function go(){
     }
     const dt=(performance.now()-t0)/1000;
     b.body.textContent=content||('💭 '+reasoning)||'(empty — try a different prompt)';
-    const tps=toks/dt;
+    const tps=dt>0.05 ? toks/dt : 0;   // guard divide-by-zero on instant [DONE]
     b.meta.textContent=`${toks} tok · ${dt.toFixed(1)}s · ${tps.toFixed(0)} t/s · spec ${spec}/pass`;
     speedEl.textContent=`${tps.toFixed(0)} t/s last`;
   }catch(e){
-    b.body.textContent='cannot reach :8096 — is the uzu lane up? (uzu-9b-lane start)';
+    // surface the real proxy error (502 detail); fall back to the connectivity
+    // hint for genuine network failures where no message was constructed
+    const msg = (e && e.message && /proxy error/.test(e.message))
+      ? e.message + ' — is the uzu lane up? (uzu-9b-lane start, or flip the switch in ModelDeck)'
+      : 'cannot reach the uzu lane (via the modeldeck proxy) — is it up? (uzu-9b-lane start, or flip the switch in ModelDeck)';
+    b.body.textContent=msg;
     b.meta.textContent='';
   }
   send.disabled=false; inp.focus();
