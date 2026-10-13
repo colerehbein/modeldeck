@@ -1,36 +1,67 @@
 # Thrash
 
-A local control panel + macOS menu-bar app for on-demand local LLM lanes.
-One switch per model — turn lanes on and off, watch RAM, and chat with the
-fastest one directly — all from a single local surface.
+**Stop your RAM from thrashing.** A local control panel + macOS menu-bar app for
+running multiple local LLM backends on one machine — one switch per model, so you
+turn them on and off ad hoc without babysitting memory.
 
-Built for Apple Silicon Macs running llama.cpp and [uzu](https://github.com/trymirai/uzu)
-side by side, but the lane system is generic: any executable exposing
-`start`/`stop`/`status` can be a lane.
+![Control panel](docs/panel.png)
+
+## The problem
+
+Modern local inference has a spread of backends, each with real strengths:
+**llama.cpp** (broad model support, long context), **LM Studio** (easy GUI +
+vision), **MLX** (Apple-native), and **uzu** (speculative decoding — up to ~4×
+faster on Apple Silicon). You want them all available. But running several in
+parallel doesn't work on a real machine: a 35B at 64K wants ~18 GB, a 27B wants
+~15 GB, and a 32 GB Mac has neither the RAM nor the patience for two at once.
+Load too many and the whole box starts swapping — the machine thrashes, and
+every lane crawls.
+
+Thrash is the switchboard. Declare each backend once, then turn lanes on and off
+ad hoc from a panel or the menu bar, with live free-memory so you can see the
+cost before you commit to it. One big model at a time, deliberately — instead of
+all of them at once, accidentally.
 
 ## What it does
 
-- **Control panel** (`web/panel.html`) — a switch per lane, live RAM, one-click
-  start/stop, and a link into the streaming chat.
-- **Menu-bar app** (`menubar/Thrash.swift`) — the same lanes in your menu
-  bar, with an at-a-glance free-memory readout.
+- **Control panel** (`web/panel.html`) — a switch per lane, live RAM with a
+  low-memory warning, one-click start/stop, and a link into the streaming chat.
+- **Menu-bar app** (`menubar/Thrash.swift`) — the same lanes in your menu bar,
+  with an at-a-glance free-memory readout (🧠 comfortable / 🔥 tight).
 - **Streaming chat** (`web/uzu-chat.html`) — a minimal chat that talks straight
-  to the uzu lane with a tiny prompt, so you see full speculative-decoding
-  throughput (no agent scaffolding in the prompt).
+  to a lane with a tiny prompt, so you see real throughput instead of
+  agent-scaffolding overhead.
+
+![Streaming chat](docs/chat.png)
+
 - **One JSON API** — the panel and menu bar share a single source of truth via
   the stdlib Python server.
+
+## Why not just use LM Studio / Ollama?
+
+Those are great *servers*. Thrash is a *control surface* that sits above whatever
+you already run:
+
+- **Backend-agnostic** — llama.cpp, uzu, MLX, LM Studio, anything with a
+  `start`/`stop`/`status`. It doesn't replace them; it orchestrates them.
+- **RAM-first** — every lane shows its approximate cost, and the panel warns
+  before you overload the machine.
+- **Menu bar** — toggle a lane without leaving whatever you're doing.
+- **Direct-speed chat** — hit a lane with a minimal prompt and watch its true
+  tok/s, instead of routing through a heavy agent stack.
+- **Zero dependencies** — Python stdlib + plain HTML/JS + a small Swift binary.
 
 ## Architecture
 
 ```
-server/thrash_server.py   stdlib HTTP control backend (the source of truth)
-server/config.py             config loader
-lanes/*.sh                   one start/stop/status script per model lane
-web/panel.html               control panel UI
-web/uzu-chat.html            streaming chat UI
-menubar/Thrash.swift      native menu-bar app (AppKit)
-menubar/build.sh             compiles the binary + .app bundle
-config/config.example.json   every machine-specific value lives here
+server/thrash_server.py    stdlib HTTP control backend (the source of truth)
+server/config.py           config loader (deep-merge + validation)
+lanes/*.sh                 one start/stop/status script per model lane
+web/panel.html             control panel UI
+web/uzu-chat.html          streaming chat UI
+menubar/Thrash.swift       native menu-bar app (AppKit)
+menubar/build.sh           compiles the binary + .app bundle
+config/config.example.json every machine-specific value lives here
 ```
 
 No dependencies beyond Python 3 stdlib for the server, and Swift for the menu
@@ -41,7 +72,7 @@ bar. The web assets are plain HTML/CSS/JS.
 ```bash
 # 1. configure
 cp config/config.example.json config/config.local.json
-$EDITOR config/config.local.json   # set your model paths, ports, ramtoggle path
+$EDITOR config/config.local.json   # set your model paths, ports, backends
 
 # 2. run the control server
 ./run.sh                          # serves on 127.0.0.1:8790
@@ -55,9 +86,9 @@ Then open <http://127.0.0.1:8790> for the panel.
 
 ## Configuration
 
-Everything machine-specific lives in `config/config.example.json`, which is
-copied to `config/config.local.json` (gitignored) and edited. Each lane declares
-its port, approximate RAM cost, and the script that controls it:
+Everything machine-specific lives in `config/config.example.json`, copied to
+`config/config.local.json` (gitignored) and edited. Each lane declares its port,
+approximate RAM cost, and the script that controls it:
 
 ```json
 {
