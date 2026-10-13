@@ -3,8 +3,10 @@
 The control server is a long-running process. Start it at login with a launchd
 agent.
 
-**Prerequisite:** copy `config/config.example.json` to `config/config.local.json`
-and edit it first — the server will not start without it.
+**Recommended:** copy `config/config.example.json` to `config/config.local.json`
+and edit it for machine-specific overrides (model paths, ports, the `ramtoggle`
+path). The server starts with just the example config if you don't — a local
+file is only needed to override the defaults.
 
 ```bash
 mkdir -p ~/.modeldeck          # launchd will not create the log directory

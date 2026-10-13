@@ -116,25 +116,29 @@ def toggle(lane_id, turn_on):
         if turn_on:
             # start blocks while the model loads; spawn detached, then verify
             # the process actually launched (a failed exec is otherwise silent).
-            proc = subprocess.Popen(
-                [script, "start"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+            try:
+                proc = subprocess.Popen(
+                    [script, "start"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as e:
+                # missing / non-executable script — Popen raises before poll()
+                return False, f"{lane_id} failed to start: {e}"
             time.sleep(0.5)
             if proc.poll() is not None:
                 return False, (f"{lane_id} failed to start (exit {proc.returncode}) "
                                "— see the lane log")
             return True, f"{lane_id} starting (loads in background)"
-        rc, out, _ = run([script, "stop"], timeout=20)
-        return rc == 0, out.strip()
+        rc, out, err = run([script, "stop"], timeout=20)
+        return rc == 0, (out.strip() or err.strip() or f"stop exited {rc}")
     if RAMTOGGLE:
         rt_lanes, _ = ramtoggle_status()
         if lane_id not in {l["id"] for l in rt_lanes}:
             return False, f"unknown lane: {lane_id}"
         action = "on" if turn_on else "off"
-        rc, out, _ = run([RAMTOGGLE, action, lane_id], timeout=60)
-        return rc == 0, out.strip()
+        rc, out, err = run([RAMTOGGLE, action, lane_id], timeout=60)
+        return rc == 0, (out.strip() or err.strip() or f"ramtoggle exited {rc}")
     return False, f"unknown lane: {lane_id} (no ramtoggle configured)"
 
 
@@ -184,7 +188,10 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._json(400, {"error": "bad content-length"})
             return None
-        if n < 0 or n > max_bytes:
+        if n < 0:
+            self._json(400, {"error": "bad content-length"})
+            return None
+        if n > max_bytes:
             self._json(413, {"error": "request too large"})
             return None
         return self.rfile.read(n) if n else b""

@@ -141,7 +141,7 @@ function render(){
   const m = DATA.memory||{};
   const hasTotal = m.total_mb && m.total_mb > 0;
   const avail=m.available_mb||0, total=hasTotal?m.total_mb:1, pct=hasTotal?Math.round(avail/total*100):0;
-  const low = pct < 20;
+  const low = hasTotal && pct < 20;   // only warn when we actually know the total
   const mem=document.getElementById('mem');
   mem.className='mem'+(low?' low':'');
   // build the free/total line without innerHTML — all numeric or known-safe
@@ -218,10 +218,13 @@ async function toggleLane(id, on){
 }
 
 function pollUntilSettled(id, want){
-  if(pollers[id]) return;   // already polling this lane — don't stack pollers
+  const existing = pollers[id];
+  if(existing && existing.want === want) return;   // already polling for this target
+  if(existing){ clearInterval(existing.iv); }        // target changed — replace the poller
   let tries=0;
-  const done=()=>{clearInterval(pollers[id]); delete pollers[id]; delete pending[id];};
-  const iv=setInterval(async()=>{
+  const rec={want, iv:null};
+  const done=()=>{ if(pollers[id]===rec){ clearInterval(rec.iv); delete pollers[id]; } delete pending[id]; };
+  rec.iv=setInterval(async()=>{
     tries++;
     try{
       const r=await fetch(API+'/api/status'); DATA=await r.json();
@@ -232,7 +235,7 @@ function pollUntilSettled(id, want){
       } else render();
     }catch(e){ if(tries>20){done();} }
   }, 4000);
-  pollers[id]=iv;
+  pollers[id]=rec;
 }
 
 async function freeAll(){
