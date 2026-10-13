@@ -23,9 +23,7 @@ Stdlib only. Run under launchd (see docs/launchd.md) or directly:
 """
 import json
 import os
-import subprocess
 import sys
-import time
 import types
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,8 +53,9 @@ from core import (  # noqa: F401
 # core.toggle() / core.ramtoggle_status() read these globals out of core at
 # call time, so a caller that patches them by name on this module (which is
 # how the lane-control tests drive the lane state) has to reach core, or the
-# patch silently does nothing. Forward the assignment in both directions:
-# the local attribute stays readable, core's state actually changes.
+# patch silently does nothing. Assignment is forwarded ONE WAY (this module
+# -> core); core's state is what the shared logic reads, so patching core
+# directly is the canonical path for new code (CLI/doctor/reaper).
 _CORE_STATE = ("CFG", "PORT", "HOST", "RAMTOGGLE", "SCRIPT_LANES", "UZU_PROXY_LANE")
 
 
