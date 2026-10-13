@@ -25,6 +25,16 @@
 
 ---
 
+## Progress
+
+- [x] T1 test infra + config/lane tests — commit 787b110, reviewed, 24 tests
+- [x] T5 config new optional fields — commit 48d94f6 + 7d75571 (review fixes), reviewed
+- [x] T1b test fixes (blocking-start stub, ramtoggle round-trip, feature-block validation) — commit b8c851f, 42 tests green, no orphans
+- [ ] T2 extract core.py + refactor server  ← IN PROGRESS
+- [ ] T3–T14 pending
+
+---
+
 ## Dependency Graph (execution waves)
 
 ```

@@ -312,12 +312,15 @@ function pollUntilSettled(id, want){
 
 async function freeAll(){
   msg('freeing big models…');
-  for(const id of ['qwen-35b','qwen-9b']){
+  // target every lane whose configured RAM cost is "big" (>8GB), rather than
+  // hardcoded ids — so the button works for any config, not just the defaults
+  const big=(DATA.lanes||[]).filter(l=>(l.ram_mb||0)>8000).map(l=>l.id);
+  for(const id of big){
     pending[id]={want:false,since:Date.now()};
     try{await fetch(API+'/api/toggle',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({id,on:false})});}catch(e){}
   }
-  setTimeout(()=>{delete pending['qwen-35b'];delete pending['qwen-9b'];refresh();msg('freed');},2000);
+  setTimeout(()=>{for(const id of big)delete pending[id];refresh();msg(big.length?'freed':'no big lanes to free');},2000);
 }
 
 // ---- log viewer ------------------------------------------------------

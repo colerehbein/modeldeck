@@ -27,7 +27,6 @@ import os
 import subprocess
 import sys
 import time
-import urllib.request  # noqa: F401  (used by the server's SSE proxy)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as config_mod
@@ -341,6 +340,7 @@ def toggle(lane_id, turn_on):
         elif active:
             msg = (f"{msg} (stopped with {active} request(s) still active "
                    f"after {DRAIN_TIMEOUT_S}s drain)")
+        ACTIVITY.pop(lane_id, None)  # a manual stop clears idle-reaper state
         return rc == 0, msg
     if RAMTOGGLE:
         rt_lanes, _ = ramtoggle_status()

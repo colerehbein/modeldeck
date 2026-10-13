@@ -162,39 +162,21 @@ def cmd_logs(argv):
     if lane is None:
         print(f"unknown lane: {lane_id}", file=sys.stderr)
         return 1
-    if hasattr(core, "read_log_tail"):
-        path, exists, tail = core.read_log_tail(lane_id, lines)
-        if path is None:
-            print(f"no log configured for {lane_id}")
-            return 0
-        if not exists:
-            print(f"{lane_id} has not been started yet (no log at {path})")
-            return 0
-        print(f"--- {path} (last {lines} lines) ---")
-        print(tail, end="" if tail.endswith("\n") else "\n")
+    path, exists, tail = core.read_log_tail(lane_id, lines)
+    if path is None:
+        print(f"no log configured for {lane_id}")
         return 0
-    log = (core.SCRIPT_LANES.get(lane_id) or {}).get("log")
-    print(f"log viewing needs the server build (core.read_log_tail).")
-    if log:
-        print(f"lane log convention: {log}")
+    if not exists:
+        print(f"{lane_id} has not been started yet (no log at {path})")
+        return 0
+    print(f"--- {path} (last {lines} lines) ---")
+    print(tail, end="" if tail.endswith("\n") else "\n")
     return 0
 
 
 def cmd_doctor(argv):
-    try:
-        import doctor
-    except ImportError:
-        print("doctor not available yet")
-        return 0
-    fn = getattr(doctor, "main", None) or getattr(doctor, "run", None)
-    if fn is None:
-        print("doctor module found but exposes no main()/run()")
-        return 1
-    try:
-        rc = fn()
-    except TypeError:
-        rc = fn(argv)
-    return rc if isinstance(rc, int) else 0
+    import doctor
+    return doctor.main()
 
 
 def main(argv):
