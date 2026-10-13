@@ -1,0 +1,8 @@
+# local machine config — never commit
+config/config.local.json
+
+# build output
+*.o
+*.swiftmodule
+__pycache__/
+.DS_Store

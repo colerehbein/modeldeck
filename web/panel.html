@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ModelDeck</title>
+<style>
+:root{
+  --bg:#eef0f3; --panel:#ffffff; --ink:#16181d; --muted:#6b7280;
+  --line:#c9ced6; --line-soft:#e3e6eb;
+  --on:#1a7f37; --load:#b7791f; --off:#9aa1ab; --alert:#c0392b;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);
+  font-size:14px;line-height:1.45;padding:20px;max-width:780px;margin:0 auto}
+
+header{display:flex;justify-content:space-between;align-items:baseline;
+  padding-bottom:12px;border-bottom:2px solid var(--ink);margin-bottom:16px}
+header h1{font-family:var(--mono);font-size:16px;font-weight:600;letter-spacing:.02em}
+header .srv{font-family:var(--mono);font-size:11px;color:var(--muted)}
+header .srv .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:var(--on);margin-right:5px;vertical-align:middle}
+header .srv.down .dot{background:var(--alert)}
+
+.mem{background:var(--panel);border:1px solid var(--line);padding:14px 16px;
+  margin-bottom:18px}
+.mem .top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.mem .big{font-family:var(--mono);font-size:26px;font-weight:600}
+.mem .big small{font-size:13px;color:var(--muted);font-weight:400}
+.mem .verdict{font-family:var(--mono);font-size:11px;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--muted)}
+.mem.low .verdict{color:var(--alert)}
+.mem .bar{height:16px;background:var(--line-soft);border:1px solid var(--line);
+  position:relative;overflow:hidden}
+.mem .bar .fill{position:absolute;left:0;top:0;bottom:0;background:var(--on);
+  transition:width .4s}
+.mem.low .bar .fill{background:var(--alert)}
+.mem .sub{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:7px}
+
+.toolbar{display:flex;gap:8px;margin-bottom:14px;align-items:center}
+button{font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+  background:var(--panel);color:var(--ink);border:1px solid var(--ink);
+  padding:8px 14px;cursor:pointer}
+button:hover{background:var(--ink);color:var(--panel)}
+button.danger{border-color:var(--alert);color:var(--alert)}
+button.danger:hover{background:var(--alert);color:#fff}
+#msg{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto}
+#msg.err{color:var(--alert)}
+
+.lane{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--off);
+  padding:12px 14px;margin-bottom:8px;display:grid;
+  grid-template-columns:1fr auto;gap:14px;align-items:center}
+.lane.on{border-left-color:var(--on)}
+.lane.loading{border-left-color:var(--load)}
+.lane .nm{font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:8px}
+.lane .pill{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;
+  padding:2px 6px;border:1px solid currentColor}
+.lane.on .pill{color:var(--on)}
+.lane.loading .pill{color:var(--load)}
+.lane.off .pill{color:var(--off)}
+.lane .meta{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:3px}
+.lane .impact{font-size:12px;color:var(--muted);margin-top:6px;max-width:56ch}
+.lane .ctl{display:flex;flex-direction:column;align-items:center;gap:4px}
+
+.sw{position:relative;width:60px;height:32px;display:inline-block}
+.sw input{opacity:0;width:0;height:0}
+.sw .sl{position:absolute;inset:0;background:#cfd4db;border:1px solid var(--ink);
+  cursor:pointer;transition:background .15s}
+.sw .sl:before{content:"";position:absolute;width:24px;height:24px;left:3px;top:3px;
+  background:#fff;border:1px solid var(--ink);transition:transform .15s}
+.sw input:checked + .sl{background:var(--on)}
+.sw input:checked + .sl:before{transform:translateX(28px)}
+.sw.loading .sl{background:var(--load);cursor:wait}
+.sw.loading .sl:before{transform:translateX(14px)}
+.sw input:disabled + .sl{opacity:.5;cursor:wait}
+.sw input:focus-visible + .sl{outline:2px solid var(--alert);outline-offset:2px}
+.st{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.st.on{color:var(--on)} .st.loading{color:var(--load)}
+
+footer{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:16px;
+  padding-top:10px;border-top:1px solid var(--line);display:flex;justify-content:space-between}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MODELDECK</h1>
+  <span class="srv" id="srv"><span class="dot"></span><span id="srvtxt">connecting…</span></span>
+</header>
+
+<div class="mem" id="mem">
+  <div class="top">
+    <div class="big" id="memavail">—</div>
+    <div class="verdict" id="memverdict">—</div>
+  </div>
+  <div class="bar"><div class="fill" id="memfill" style="width:0%"></div></div>
+  <div class="sub" id="memsub">—</div>
+</div>
+
+<div class="toolbar">
+  <button onclick="refresh()">Refresh</button>
+  <button class="danger" onclick="freeAll()">Free all big models</button>
+  <a href="/uzu-chat" target="_blank" style="font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;background:var(--panel);color:var(--on);border:1px solid var(--on);padding:8px 14px;cursor:pointer;text-decoration:none">uzu 9B fast chat →</a>
+  <span id="msg"></span>
+</div>
+
+<div id="lanes"></div>
+
+<footer>
+  <span id="foot">—</span>
+  <span>127.0.0.1:8790</span>
+</footer>
+
+<script>
+const API = "http://127.0.0.1:8790";
+let DATA = null;
+const pending = {};   // id -> {want:bool, since:epoch_ms}
+
+function esc(s){return (s||"").replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function msg(t,err){const e=document.getElementById('msg');e.textContent=t;e.className=err?'err':''}
+
+async function refresh(){
+  try{
+    const r = await fetch(API+'/api/status');
+    if(!r.ok) throw new Error('http '+r.status);
+    DATA = await r.json();
+    document.getElementById('srv').className='srv';
+    document.getElementById('srvtxt').textContent='live';
+    render();
+  }catch(e){
+    document.getElementById('srv').className='srv down';
+    document.getElementById('srvtxt').textContent='server down';
+    msg('cannot reach :8790 — is modeldeck running?', true);
+  }
+}
+
+function render(){
+  const m = DATA.memory||{};
+  const avail=m.available_mb||0, total=m.total_mb||1, pct=Math.round(avail/total*100);
+  const low = pct < 20;
+  const mem=document.getElementById('mem');
+  mem.className='mem'+(low?' low':'');
+  document.getElementById('memavail').innerHTML=
+    `${(avail/1024).toFixed(1)}<small> / ${(total/1024).toFixed(0)} GB free</small>`;
+  document.getElementById('memverdict').textContent =
+    low? 'low — free a lane' : (pct<45? 'ok':'comfortable');
+  document.getElementById('memfill').style.width=pct+'%';
+  document.getElementById('memsub').textContent =
+    `wired ${((m.wired_mb||0)/1024).toFixed(1)} GB · compressed ${((m.compressed_mb||0)/1024).toFixed(1)} GB · ${pct}% available`;
+
+  const box=document.getElementById('lanes'); box.innerHTML='';
+  (DATA.lanes||[]).forEach(l=>{
+    const p = pending[l.id];
+    let state = l.on ? 'on' : 'off';
+    if(p && p.want !== l.on){
+      if(Date.now()-p.since > 150000){ delete pending[l.id]; }
+      else state = 'loading';
+    } else if(p && p.want === l.on){ delete pending[l.id]; }
+
+    const ram=l.ram_mb? (l.ram_mb>=1024? `${(l.ram_mb/1024).toFixed(0)} GB` : `${l.ram_mb} MB`) : '—';
+    const div=document.createElement('div');
+    div.className='lane '+state;
+    const disabled = state==='loading' ? 'disabled' : '';
+    const checked = (state==='on' || (state==='loading'&&p&&p.want)) ? 'checked':'';
+    div.innerHTML=`
+      <div>
+        <div class="nm">${esc(l.label)}
+          <span class="pill">${state==='loading'?'loading':state}</span></div>
+        <div class="meta">:${l.port||'—'} · ~${ram} when on · ${esc(l.kind)}</div>
+        <div class="impact">${esc(l.impact)}</div>
+      </div>
+      <div class="ctl">
+        <label class="sw ${state==='loading'?'loading':''}">
+          <input type="checkbox" ${checked} ${disabled}
+            onchange="toggleLane('${esc(l.id)}', this.checked)">
+          <span class="sl"></span>
+        </label>
+        <span class="st ${state}">${state==='loading'?'…':state}</span>
+      </div>`;
+    box.appendChild(div);
+  });
+  document.getElementById('foot').textContent =
+    `${DATA.lanes.length} lanes · updated ${new Date((DATA.ts||0)*1000).toLocaleTimeString()}`;
+}
+
+async function toggleLane(id, on){
+  pending[id] = {want:on, since:Date.now()};
+  msg(`${on?'loading':'stopping'} ${id}…`);
+  render();
+  try{
+    const r=await fetch(API+'/api/toggle',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({id,on})});
+    const d=await r.json();
+    msg(d.ok? `${id}: ${d.message}` : `failed: ${d.message}`, !d.ok);
+    if(d.status){DATA=d.status;}
+    pollUntilSettled(id, on);
+  }catch(e){ msg('toggle failed', true); pollUntilSettled(id,on); }
+}
+
+function pollUntilSettled(id, want){
+  let tries=0;
+  const iv=setInterval(async()=>{
+    tries++;
+    try{
+      const r=await fetch(API+'/api/status'); DATA=await r.json();
+      const lane=(DATA.lanes||[]).find(l=>l.id===id);
+      if(!lane || lane.on===want || tries>20){
+        clearInterval(iv); delete pending[id]; render();
+        if(lane&&lane.on===want) msg(`${id} ${want?'up':'stopped'}`);
+      } else render();
+    }catch(e){ if(tries>20){clearInterval(iv);delete pending[id];} }
+  }, 4000);
+}
+
+async function freeAll(){
+  msg('freeing big models…');
+  for(const id of ['qwen-35b','qwen-9b']){
+    pending[id]={want:false,since:Date.now()};
+    try{await fetch(API+'/api/toggle',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({id,on:false})});}catch(e){}
+  }
+  setTimeout(()=>{delete pending['qwen-35b'];delete pending['qwen-9b'];refresh();msg('freed');},2000);
+}
+
+refresh();
+setInterval(refresh, 12000);
+</script>
+</body>
+</html>

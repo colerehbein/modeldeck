@@ -1,0 +1,59 @@
+{
+  "_comment": "ModelDeck configuration. Copy to config.local.json and edit for your machine. config.local.json is gitignored.",
+
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8790
+  },
+
+  "_ramtoggle_comment": "Path to the ramtoggle CLI (https://github.com/... your ramtoggle). Set to null to disable ramtoggle lanes entirely.",
+  "ramtoggle": "~/.local/bin/ramtoggle",
+
+  "_web_comment": "HTML assets served by the backend. Relative paths resolve against the repo root.",
+  "web": {
+    "panel": "web/panel.html",
+    "uzu_chat": "web/uzu-chat.html"
+  },
+
+  "_uzu_proxy_comment": "Which lane the /api/uzu-chat SSE proxy forwards to (must match a lane id below).",
+  "uzu_proxy_lane": "uzu-9b",
+
+  "lanes": [
+    {
+      "id": "qwen-35b",
+      "label": "Qwen3.6-35B-A3B (uncensored + vision)",
+      "kind": "script",
+      "port": 8099,
+      "approx_mb": 18000,
+      "impact": "Smart daily driver. 64K context, Q8 KV. Big RAM cost (~18GB).",
+      "script": "lanes/qwen-lane.sh"
+    },
+    {
+      "id": "qwen-9b",
+      "label": "Qwen3.5-9B (long-context, on-demand)",
+      "kind": "script",
+      "port": 8097,
+      "approx_mb": 6500,
+      "impact": "Long-context lane, 128K. Auto-loads on first request.",
+      "script": "lanes/qwen9b-lane.sh"
+    },
+    {
+      "id": "uzu-9b",
+      "label": "Qwen3.5-9B via uzu (speculative decoding)",
+      "kind": "script",
+      "port": 8096,
+      "approx_mb": 6300,
+      "impact": "Fastest lane: speculative decoding, ~92 t/s on predictable text. 4x llama.cpp.",
+      "script": "lanes/uzu-9b-lane.sh"
+    },
+    {
+      "id": "uzu-27b",
+      "label": "Qwen3.8-27B via uzu (speculative decoding)",
+      "kind": "script",
+      "port": 8094,
+      "approx_mb": 15000,
+      "impact": "Smarter 27B, bandwidth-capped ~24 t/s. For hard reasoning when you can wait.",
+      "script": "lanes/uzu-27b-lane.sh"
+    }
+  ]
+}
