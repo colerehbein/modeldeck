@@ -40,8 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         rebuildMenu()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
-            self.refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.refresh()
         }
     }
 
@@ -52,8 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let task = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
             guard let self = self, let data = data else { return }
             if let st = try? JSONDecoder().decode(Status.self, from: data) {
-                self.lastStatus = st
-                DispatchQueue.main.async { self.updateBarIcon(with: st) }
+                DispatchQueue.main.async { self.lastStatus = st; self.updateBarIcon(with: st) }
             }
         }
         task.resume()
@@ -71,9 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                let statusDict = obj["status"] as? [String: Any],
                let statusData = try? JSONSerialization.data(withJSONObject: statusDict),
                let st = try? JSONDecoder().decode(Status.self, from: statusData) {
-                self?.lastStatus = st
-                DispatchQueue.main.async { self?.updateBarIcon(with: st) }
-            } else {
+               DispatchQueue.main.async { self?.lastStatus = st; self?.updateBarIcon(with: st) }
+               } else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self?.refresh() }
             }
         }

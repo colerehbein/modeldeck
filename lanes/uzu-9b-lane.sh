@@ -19,14 +19,15 @@ is_up() { curl -sf --max-time 3 "http://127.0.0.1:${PORT}/v1/models" >/dev/null 
 case "${1:-}" in
   start)
     if is_up; then echo "already up on :${PORT}"; exit 0; fi
-    FREE=$(memory_pressure 2>/dev/null | awk '/free percentage/ {gsub("%","",$NF); print 100-$NF}')
+    mkdir -p "$(dirname "$LOG")"
+    FREE=$( { memory_pressure 2>/dev/null || true; } | awk '/free percentage/ {gsub("%","",$NF); print $NF}')
     if [ -n "${FREE:-}" ] && [ "$FREE" -lt 20 ]; then
       echo "WARNING: only ${FREE}% memory headroom — uzu 9B needs ~6GB. Free RAM first." >&2
     fi
     exec env UZU_ALWAYS_INLINE=1 "$UZU_CLI" server --model "$UZU_MODEL" --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1
     ;;
   stop)
-    pkill -f "uzu.*server.*${PORT}" 2>/dev/null && echo "stopped" || echo "not running"
+    pkill -f "uzu .*server .*--port[= ]${PORT}([^0-9]|$)" 2>/dev/null && echo "stopped" || echo "not running"
     ;;
   status)
     if is_up; then echo "UP on :${PORT}"; else echo "DOWN"; fi
