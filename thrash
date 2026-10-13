@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""thrash — command-line control for Thrash lanes.
+
+Runs from anywhere (no cwd assumptions): server/ is located relative to this
+file, so `import core` always resolves to the repo's shared core.
+
+Subcommands:
+  status [--json]          lane table + memory summary (or raw JSON)
+  on <id> / off <id>       start / stop a lane (exits 1 on failure)
+  toggle <id>              flip a lane's on/off state
+  logs <id> [--lines N]    tail a lane's log (needs core.read_log_tail)
+  doctor                   run server/doctor.py if present
+
+Config: reads config/config.local.json unless THRASH_CONFIG_LOCAL points at
+an alternative local config file (used by the test suite).
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "server"))
+
+_local = os.environ.get("THRASH_CONFIG_LOCAL")
+if _local:
+    # Point the config loader at an alternate local config BEFORE core
+    # imports it (core calls config.load() at import time).
+    import config as _config_mod
+    from pathlib import Path
+    _config_mod.LOCAL = Path(os.path.expanduser(_local))
+
+import core
+
+ON, OFF = "\u25cf", "\u25cb"  # ● / ○
+
+USAGE = """usage: thrash <command> [args]
+
+commands:
+  status [--json]            show lane states and memory
+  on <id>                    start a lane
+  off <id>                   stop a lane
+  toggle <id>                flip a lane's on/off state
+  logs <id> [--lines N]      show a lane's recent log (default 40 lines)
+  doctor                     run environment checks
+
+Use `thrash status` to list lane ids."""
+
+
+def find_lane(lane_id):
+    """Return the status dict for lane_id, or None."""
+    for lane in core.get_status()["lanes"]:
+        if lane["id"] == lane_id:
+            return lane
+    return None
+
+
+def fmt_mb(mb):
+    if mb is None:
+        return "-"
+    if mb >= 1024:
+        return f"{mb / 1024:.1f}GB"
+    return f"{mb}MB"
+
+
+def fmt_memory(memory):
+    total = memory.get("total_mb")
+    free = memory.get("free_mb")
+    if free is None:
+        free = memory.get("available_mb")
+    if total is None and free is None:
+        return "memory: n/a (no ramtoggle configured)"
+    return f"memory: {fmt_mb(free)} free / {fmt_mb(total)} total"
+
+
+def cmd_status(argv):
+    if argv and argv[0] == "--json":
+        print(json.dumps(core.get_status(), indent=2))
+        return 0
+    st = core.get_status()
+    lanes = st["lanes"]
+    if not lanes:
+        print("no lanes configured")
+        print(fmt_memory(st["memory"]))
+        return 0
+    id_w = max(len("ID"), max(len(l["id"]) for l in lanes))
+    port_w = max(len("PORT"), max(len(str(l["port"] or "")) for l in lanes))
+    print(f"{'ID'.ljust(id_w)}  {'ON':<2}  {'PORT'.ljust(port_w)}  ~RAM")
+    for l in lanes:
+        print(f"{l['id'].ljust(id_w)}  "
+              f"{(ON if l['on'] else OFF):<2}  "
+              f"{str(l['port'] or '-').ljust(port_w)}  "
+              f"{fmt_mb(l.get('ram_mb'))}")
+    print(fmt_memory(st["memory"]))
+    return 0
+
+
+def cmd_set(lane_id, turn_on):
+    if lane_id is None:
+        print(USAGE, file=sys.stderr)
+        return 2
+    ok, msg = core.toggle(lane_id, turn_on)
+    print(msg)
+    return 0 if ok else 1
+
+
+def cmd_toggle(lane_id):
+    if lane_id is None:
+        print(USAGE, file=sys.stderr)
+        return 2
+    lane = find_lane(lane_id)
+    if lane is None:
+        print(f"unknown lane: {lane_id}", file=sys.stderr)
+        return 1
+    ok, msg = core.toggle(lane_id, not lane["on"])
+    print(msg)
+    return 0 if ok else 1
+
+
+def cmd_logs(argv):
+    lane_id = argv[0] if argv else None
+    if lane_id is None:
+        print(USAGE, file=sys.stderr)
+        return 2
+    lines = 40
+    if "--lines" in argv:
+        i = argv.index("--lines")
+        try:
+            lines = int(argv[i + 1])
+        except (IndexError, ValueError):
+            print("usage: thrash logs <id> [--lines N]", file=sys.stderr)
+            return 2
+    lane = find_lane(lane_id)
+    if lane is None:
+        print(f"unknown lane: {lane_id}", file=sys.stderr)
+        return 1
+    if hasattr(core, "read_log_tail"):
+        path, exists, tail = core.read_log_tail(lane_id, lines)
+        if path is None:
+            print(f"no log configured for {lane_id}")
+            return 0
+        if not exists:
+            print(f"{lane_id} has not been started yet (no log at {path})")
+            return 0
+        print(f"--- {path} (last {lines} lines) ---")
+        print(tail, end="" if tail.endswith("\n") else "\n")
+        return 0
+    log = (core.SCRIPT_LANES.get(lane_id) or {}).get("log")
+    print(f"log viewing needs the server build (core.read_log_tail).")
+    if log:
+        print(f"lane log convention: {log}")
+    return 0
+
+
+def cmd_doctor(argv):
+    try:
+        import doctor
+    except ImportError:
+        print("doctor not available yet")
+        return 0
+    fn = getattr(doctor, "main", None) or getattr(doctor, "run", None)
+    if fn is None:
+        print("doctor module found but exposes no main()/run()")
+        return 1
+    try:
+        rc = fn()
+    except TypeError:
+        rc = fn(argv)
+    return rc if isinstance(rc, int) else 0
+
+
+def main(argv):
+    if not argv:
+        print(USAGE, file=sys.stderr)
+        return 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "status":
+        return cmd_status(rest)
+    if cmd == "on":
+        return cmd_set(rest[0] if rest else None, True)
+    if cmd == "off":
+        return cmd_set(rest[0] if rest else None, False)
+    if cmd == "toggle":
+        return cmd_toggle(rest[0] if rest else None)
+    if cmd == "logs":
+        return cmd_logs(rest)
+    if cmd == "doctor":
+        return cmd_doctor(rest)
+    print(f"unknown command: {cmd}", file=sys.stderr)
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
