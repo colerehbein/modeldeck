@@ -25,12 +25,14 @@ import json
 import os
 import sys
 import types
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as config_mod
 import core
+import reaper
 
 # Re-exported so existing callers (and tests/test_lanes.py) can keep reaching
 # the shared logic through this module. core owns the state; these names are
@@ -42,11 +44,15 @@ from core import (  # noqa: F401
     RAMTOGGLE,
     SCRIPT_LANES,
     UZU_PROXY_LANE,
+    api_config,
     get_status,
+    lane_log_path,
     ramtoggle_status,
+    read_log_tail,
     run,
     script_lane_on,
     toggle,
+    touch_activity,
     uzu_proxy_port,
 )
 
@@ -134,12 +140,52 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, core.get_status())
         elif path == "/api/health":
             self._json(200, {"ok": True})
+        elif path == "/api/logs":
+            self._serve_logs()
+        elif path == "/api/config":
+            self._json(200, core.api_config())
         elif path in ("", "/index.html", "/panel"):
             self._html(200, PANEL_HTML)
         elif path in ("/uzu-chat", "/uzu-chat.html"):
             self._html(200, UZU_CHAT_HTML)
         else:
             self._json(404, {"error": "not found"})
+
+    def _serve_logs(self):
+        """GET /api/logs?id=<lane>&lines=N -> the lane's log tail.
+
+        The path resolution and tail read live in core.read_log_tail() so the
+        CLI can reuse them; this only shapes the HTTP contract.
+        """
+        query = urllib.parse.urlparse(self.path).query
+        params = urllib.parse.parse_qs(query)
+        lane_id = (params.get("id") or [""])[0].strip()
+        if not lane_id:
+            self._json(400, {"error": "missing required query param: id"})
+            return
+        lane = core.SCRIPT_LANES.get(lane_id)
+        if not lane:
+            self._json(404, {"error": f"unknown lane: {lane_id}"})
+            return
+        raw_lines = (params.get("lines") or [None])[0]
+        path, exists, tail = core.read_log_tail(lane_id, raw_lines)
+        resp = {
+            "id": lane_id,
+            "path": path,
+            "exists": exists,
+            "tail": tail,
+            "script": lane.get("script"),
+        }
+        if not exists:
+            # Lanes with no configured `log` write wherever their script
+            # chooses (by convention $HOME/.hermes/logs/), which we cannot
+            # map reliably — surface the script so the UI can say where.
+            resp["note"] = (
+                "no log file: this lane declares no log path in config"
+                if path is None else
+                f"log file not found (or unreadable): {path}"
+            )
+        self._json(200, resp)
 
     def do_POST(self):
         if self.path == "/api/toggle":
@@ -152,6 +198,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "bad json"})
                 return
             ok, msg = core.toggle(req.get("id"), bool(req.get("on")))
+            if ok and bool(req.get("on")):
+                # Activity signal for the idle reaper: a toggle-on counts as
+                # Thrash-mediated use of the lane from this moment on.
+                core.touch_activity(req.get("id"))
             self._json(200, {"ok": ok, "message": msg, "status": core.get_status()})
         elif self.path == "/api/uzu-chat":
             self._proxy_uzu_chat()
@@ -171,6 +221,9 @@ class Handler(BaseHTTPRequestHandler):
             body = b"{}"
         upstream = None
         headers_sent = False
+        # Activity signal for the idle reaper: a proxied chat message counts
+        # as use of the uzu lane, so it does not get reaped mid-conversation.
+        core.touch_activity(core.UZU_PROXY_LANE)
         try:
             rreq = urllib.request.Request(
                 f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -205,6 +258,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    srv = ThreadingHTTPServer((core.HOST, core.PORT), Handler)
-    print(f"thrash server on {core.HOST}:{core.PORT}", flush=True)
-    srv.serve_forever()
+    # Idle auto-unload (TTL reaper): started ONLY when running as the server,
+    # never on import — tests import this module and must not spawn threads.
+    # core.stop_idle_lanes() no-ops unless idle_unload.enabled is true.
+    _reaper = None
+    if core.CFG["idle_unload"]["enabled"]:
+        _reaper = reaper.Reaper()
+        _reaper.start()
+        cfg = core.idle_unload_cfg()
+        print(f"reaper: on — unload after {cfg.get('ttl_minutes')}min idle "
+              f"(lanes={cfg.get('lanes')})", flush=True)
+    try:
+        srv = ThreadingHTTPServer((core.HOST, core.PORT), Handler)
+        print(f"thrash server on {core.HOST}:{core.PORT}", flush=True)
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if _reaper is not None:
+            _reaper.stop()
