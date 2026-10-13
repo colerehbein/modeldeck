@@ -51,13 +51,14 @@ Then open <http://127.0.0.1:8790>.
 
 ![Streaming chat](docs/chat.png)
 
-- **CLI** — `./thrash on|off|toggle|status|logs|doctor` for the same lanes from
-  the terminal, including a `doctor` that checks your environment.
-- **Idle auto-unload** — lanes stop themselves after a TTL of inactivity, so a
-  forgotten lane doesn't hold RAM all day.
+- **CLI** — `./thrash on|off|toggle|status [--json]|logs|doctor` for the same
+  lanes from the terminal, including a `doctor` that checks your environment.
+- **Idle auto-unload** — optionally stop lanes after a TTL of inactivity, so a
+  forgotten lane doesn't hold RAM all day (off by default; enable in config).
 - **RAM guard** — live free-memory readout and a low-memory warning before you
   commit to a big model.
-- **Notifications** — macOS notifications when a lane starts or stops.
+- **Notifications** — macOS notifications when a lane finishes loading, or when
+  free memory runs low.
 - **Log viewer** — per-lane log tail in the panel and via `./thrash logs <id>`.
 - **Chat lane-picker** — pick which lane the chat talks to.
 - **One JSON API** — the panel, menu bar, and CLI share a single source of
