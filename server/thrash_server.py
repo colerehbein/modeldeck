@@ -6,10 +6,9 @@ One small stdlib HTTP server that unifies every local model lane behind a
 single JSON API, so the HTML panel and the Swift menu bar app both talk to the
 same source of truth.
 
-It merges two lane sources:
-  1. ramtoggle --json   (launchd / LM Studio / router / ComfyUI lanes), if
-     a ramtoggle path is configured
-  2. the lane scripts declared in config/*.json (llama.cpp + uzu models)
+All lane control and status logic lives in core.py (shared with the CLI, the
+doctor, the TTL reaper and the tests); this module is only the HTTP surface:
+routing, JSON encoding and the uzu SSE proxy.
 
 API:
   GET  /api/status        -> { memory, lanes:[{id,label,kind,on,port,ram_mb,impact}] }
@@ -19,10 +18,6 @@ API:
   POST /api/toggle        body {"id":"...","on":true|false} -> {ok, message, status}
   POST /api/uzu-chat      -> SSE stream-proxy to the configured uzu lane
 
-Lane control:
-  - script lanes  -> `<script> start|stop`, status via `<script> status`
-  - ramtoggle lanes -> `ramtoggle on|off <id>`, status via `ramtoggle --json`
-
 Stdlib only. Run under launchd (see docs/launchd.md) or directly:
     python3 server/thrash_server.py
 """
@@ -31,22 +26,52 @@ import os
 import subprocess
 import sys
 import time
+import types
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as config_mod
+import core
 
-CFG = config_mod.load()
-PORT = int(CFG["server"]["port"])
-HOST = CFG["server"]["host"]
-RAMTOGGLE = CFG.get("ramtoggle") or None
-SCRIPT_LANES = {l["id"]: l for l in CFG.get("lanes", [])}
-UZU_PROXY_LANE = CFG.get("uzu_proxy_lane")
+# Re-exported so existing callers (and tests/test_lanes.py) can keep reaching
+# the shared logic through this module. core owns the state; these names are
+# the same objects, not copies.
+from core import (  # noqa: F401
+    CFG,
+    HOST,
+    PORT,
+    RAMTOGGLE,
+    SCRIPT_LANES,
+    UZU_PROXY_LANE,
+    get_status,
+    ramtoggle_status,
+    run,
+    script_lane_on,
+    toggle,
+    uzu_proxy_port,
+)
+
+# core.toggle() / core.ramtoggle_status() read these globals out of core at
+# call time, so a caller that patches them by name on this module (which is
+# how the lane-control tests drive the lane state) has to reach core, or the
+# patch silently does nothing. Forward the assignment in both directions:
+# the local attribute stays readable, core's state actually changes.
+_CORE_STATE = ("CFG", "PORT", "HOST", "RAMTOGGLE", "SCRIPT_LANES", "UZU_PROXY_LANE")
+
+
+class _ServerModule(types.ModuleType):
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name in _CORE_STATE:
+            setattr(core, name, value)
+
+
+sys.modules[__name__].__class__ = _ServerModule
 
 
 def _load_asset(key, fallback_title):
-    path = config_mod.web_path(CFG, key)
+    path = config_mod.web_path(core.CFG, key)
     if path and path.exists():
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
@@ -55,98 +80,6 @@ def _load_asset(key, fallback_title):
 
 PANEL_HTML = _load_asset("panel", "Thrash")
 UZU_CHAT_HTML = _load_asset("uzu_chat", "uzu chat")
-
-
-def run(cmd, timeout=30):
-    try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, p.stdout or "", p.stderr or ""
-    except Exception as e:  # noqa: BLE001
-        return 1, "", str(e)
-
-
-def script_lane_on(lane):
-    """Ask the lane script for ground truth (on-demand servers may be down)."""
-    rc, out, _ = run([lane["script"], "status"], timeout=15)
-    return any(line.strip().startswith("UP") for line in out.splitlines())
-
-
-def ramtoggle_status():
-    """Return (lanes, memory) from ramtoggle --json, or ([], {}) if unavailable."""
-    if not RAMTOGGLE:
-        return [], {}
-    rc, out, _ = run([RAMTOGGLE, "--json"], timeout=30)
-    if rc != 0:
-        return [], {}
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return [], {}
-    lanes = [{
-        "id": l["id"],
-        "label": l["label"],
-        "kind": l.get("kind", "ramtoggle"),
-        "on": bool(l.get("on")),
-        "port": l.get("port"),
-        "ram_mb": l.get("approx_mb"),
-        "impact": l.get("impact", ""),
-    } for l in data.get("lanes", [])]
-    return lanes, data.get("memory", {})
-
-
-def get_status():
-    rt_lanes, memory = ramtoggle_status()
-    lanes = list(rt_lanes)
-    for lane in CFG.get("lanes", []):
-        lanes.append({
-            "id": lane["id"],
-            "label": lane["label"],
-            "kind": lane.get("kind", "script"),
-            "on": script_lane_on(lane),
-            "port": lane.get("port"),
-            "ram_mb": lane.get("approx_mb"),
-            "impact": lane.get("impact", ""),
-        })
-    return {"memory": memory, "lanes": lanes, "ts": int(time.time())}
-
-
-def toggle(lane_id, turn_on):
-    if lane_id in SCRIPT_LANES:
-        script = SCRIPT_LANES[lane_id]["script"]
-        if turn_on:
-            # start blocks while the model loads; spawn detached, then verify
-            # the process actually launched (a failed exec is otherwise silent).
-            try:
-                proc = subprocess.Popen(
-                    [script, "start"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-            except OSError as e:
-                # missing / non-executable script — Popen raises before poll()
-                return False, f"{lane_id} failed to start: {e}"
-            time.sleep(0.5)
-            if proc.poll() is not None:
-                return False, (f"{lane_id} failed to start (exit {proc.returncode}) "
-                               "— see the lane log")
-            return True, f"{lane_id} starting (loads in background)"
-        rc, out, err = run([script, "stop"], timeout=20)
-        return rc == 0, (out.strip() or err.strip() or f"stop exited {rc}")
-    if RAMTOGGLE:
-        rt_lanes, _ = ramtoggle_status()
-        if lane_id not in {l["id"] for l in rt_lanes}:
-            return False, f"unknown lane: {lane_id}"
-        action = "on" if turn_on else "off"
-        rc, out, err = run([RAMTOGGLE, action, lane_id], timeout=60)
-        return rc == 0, (out.strip() or err.strip() or f"ramtoggle exited {rc}")
-    return False, f"unknown lane: {lane_id} (no ramtoggle configured)"
-
-
-def uzu_proxy_port():
-    if not UZU_PROXY_LANE:
-        return None
-    lane = SCRIPT_LANES.get(UZU_PROXY_LANE)
-    return lane.get("port") if lane else None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -199,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.rstrip("/")
         if path == "/api/status":
-            self._json(200, get_status())
+            self._json(200, core.get_status())
         elif path == "/api/health":
             self._json(200, {"ok": True})
         elif path in ("", "/index.html", "/panel"):
@@ -219,8 +152,8 @@ class Handler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._json(400, {"error": "bad json"})
                 return
-            ok, msg = toggle(req.get("id"), bool(req.get("on")))
-            self._json(200, {"ok": ok, "message": msg, "status": get_status()})
+            ok, msg = core.toggle(req.get("id"), bool(req.get("on")))
+            self._json(200, {"ok": ok, "message": msg, "status": core.get_status()})
         elif self.path == "/api/uzu-chat":
             self._proxy_uzu_chat()
         else:
@@ -228,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _proxy_uzu_chat(self):
         """Stream-proxy to the configured uzu lane (SSE passthrough + CORS)."""
-        port = uzu_proxy_port()
+        port = core.uzu_proxy_port()
         if not port:
             self._json(502, {"error": "no uzu_proxy_lane configured"})
             return
@@ -273,6 +206,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"thrash server on {HOST}:{PORT}", flush=True)
+    srv = ThreadingHTTPServer((core.HOST, core.PORT), Handler)
+    print(f"thrash server on {core.HOST}:{core.PORT}", flush=True)
     srv.serve_forever()
