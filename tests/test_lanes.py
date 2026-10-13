@@ -5,6 +5,7 @@ module level against a throwaway temp config — the machine's real
 config.local.json is never read by these tests. Per-test, the module's
 SCRIPT_LANES/RAMTOGGLE globals are swapped (and restored in tearDown).
 """
+import json
 import os
 import tempfile
 import unittest
@@ -55,11 +56,15 @@ class ScriptLaneOnTest(LaneControlTestCase):
         """script_lane_on is False before start, True after."""
         lane = self.stub_lane()
         self.assertFalse(thrash_server.script_lane_on(lane))
-        rc, _, _ = thrash_server.run([lane["script"], "start"])
-        self.assertEqual(rc, 0)
+        # Start via toggle() (the production entry point), not by calling the
+        # script directly: the stub now holds like the real lane scripts, so
+        # toggle's poll()-after-0.5s check sees a live process and succeeds.
+        self.addCleanup(thrash_server.run, [lane["script"], "stop"])
+        ok, _ = thrash_server.toggle(lane["id"], True)
+        self.assertTrue(ok)
         self.assertTrue(thrash_server.script_lane_on(lane))
-        rc, _, _ = thrash_server.run([lane["script"], "stop"])
-        self.assertEqual(rc, 0)
+        ok, _ = thrash_server.toggle(lane["id"], False)
+        self.assertTrue(ok)
         self.assertFalse(thrash_server.script_lane_on(lane))
 
     def test_missing_script_reports_down_not_crash(self):
@@ -94,12 +99,37 @@ class ToggleScriptLaneTest(LaneControlTestCase):
     def test_toggle_off_running_lane(self):
         """toggle(off) on a started stub lane stops it."""
         lane = self.stub_lane()
-        rc, _, _ = thrash_server.run([lane["script"], "start"])
-        self.assertEqual(rc, 0)
+        self.addCleanup(thrash_server.run, [lane["script"], "stop"])
+        ok, _ = thrash_server.toggle(lane["id"], True)
+        self.assertTrue(ok)
         self.assertTrue(thrash_server.script_lane_on(lane))
         ok, msg = thrash_server.toggle(lane["id"], False)
         self.assertTrue(ok)
         self.assertIn("stopped", msg)
+        self.assertFalse(thrash_server.script_lane_on(lane))
+
+    def test_toggle_on_running_lane_succeeds_and_leaves_marker(self):
+        """toggle(start) on a holding stub: success + marker + script_lane_on.
+
+        This is the production start path: the stub holds for STUB_HOLD
+        seconds like the real lane scripts, so toggle's 0.5s poll() sees a
+        live process. Cleanup stops the lane so no process outlives the test
+        (the stub's stop pkills its own start process by script path).
+        """
+        os.environ["STUB_HOLD"] = "3"
+        self.addCleanup(os.environ.pop, "STUB_HOLD", None)
+        lane = self.stub_lane()
+        self.addCleanup(thrash_server.run, [lane["script"], "stop"])
+        marker = os.path.join(self.tmpdir, lane["id"] + ".sh.up")
+        self.assertFalse(os.path.exists(marker))
+        ok, msg = thrash_server.toggle(lane["id"], True)
+        self.assertTrue(ok)
+        self.assertIn("starting", msg)
+        self.assertTrue(os.path.exists(marker))
+        self.assertTrue(thrash_server.script_lane_on(lane))
+        # Cleanup already registered; explicitly stop to assert it works.
+        ok, msg = thrash_server.toggle(lane["id"], False)
+        self.assertTrue(ok)
         self.assertFalse(thrash_server.script_lane_on(lane))
 
     def test_toggle_lane_from_loaded_config(self):
@@ -112,9 +142,11 @@ class ToggleScriptLaneTest(LaneControlTestCase):
         thrash_server.SCRIPT_LANES = {l["id"]: l for l in cfg["lanes"]}
         thrash_server.RAMTOGGLE = cfg.get("ramtoggle") or None
         lane = thrash_server.SCRIPT_LANES["cfg-lane"]
+        self.addCleanup(thrash_server.run, [lane["script"], "stop"])
 
         self.assertFalse(thrash_server.script_lane_on(lane))
-        thrash_server.run([lane["script"], "start"])
+        ok, _ = thrash_server.toggle("cfg-lane", True)
+        self.assertTrue(ok)
         self.assertTrue(thrash_server.script_lane_on(lane))
         ok, _ = thrash_server.toggle("cfg-lane", False)
         self.assertTrue(ok)
@@ -154,6 +186,82 @@ class ToggleUnknownLaneTest(LaneControlTestCase):
         lanes, memory = thrash_server.ramtoggle_status()
         self.assertEqual(lanes, [])
         self.assertEqual(memory, {})
+
+
+class RamtoggleStateRoundTripTest(LaneControlTestCase):
+    """The stateful ramtoggle stub: toggle(id, on/off) is observable in --json."""
+
+    def _stub_ramtoggle(self):
+        stub = helpers.make_ramtoggle_stub(self.tmpdir)
+        thrash_server.SCRIPT_LANES = {}
+        thrash_server.RAMTOGGLE = stub
+        self.addCleanup(thrash_server.toggle, "stub-lane", False)
+        return stub
+
+    def test_toggle_on_then_off_round_trips_through_json(self):
+        """toggle(on) flips --json to on:true; toggle(off) back to on:false."""
+        self._stub_ramtoggle()
+        lanes, _ = thrash_server.ramtoggle_status()
+        self.assertFalse(lanes[0]["on"])  # state file absent -> off
+
+        ok, msg = thrash_server.toggle("stub-lane", True)
+        self.assertTrue(ok)
+        self.assertIn("toggled stub-lane on", msg)
+        lanes, _ = thrash_server.ramtoggle_status()
+        self.assertTrue(lanes[0]["on"])
+
+        ok, msg = thrash_server.toggle("stub-lane", False)
+        self.assertTrue(ok)
+        self.assertIn("toggled stub-lane off", msg)
+        lanes, _ = thrash_server.ramtoggle_status()
+        self.assertFalse(lanes[0]["on"])
+
+    def test_toggle_reflected_in_raw_json_output(self):
+        """The on/off flip is visible in the raw --json stdout, not just the
+        parsed lanes list."""
+        self._stub_ramtoggle()
+        before = thrash_server.run([thrash_server.RAMTOGGLE, "--json"])[1]
+        self.assertIn('"on":false', before)
+        thrash_server.toggle("stub-lane", True)
+        after = thrash_server.run([thrash_server.RAMTOGGLE, "--json"])[1]
+        self.assertIn('"on":true', after)
+
+
+class RamtoggleFailureTest(LaneControlTestCase):
+    """ramtoggle_status() degrades to ([], {}) on malformed / failed --json."""
+
+    def _ramtoggle_stub_with(self, body):
+        stub = helpers.write_exec(
+            os.path.join(self.tmpdir, "rt-bad"), "#!/usr/bin/env bash\n" + body)
+        thrash_server.SCRIPT_LANES = {}
+        thrash_server.RAMTOGGLE = stub
+        return stub
+
+    def test_malformed_json_returns_empty_not_raise(self):
+        self._ramtoggle_stub_with("echo 'not json at all'\n")
+        lanes, memory = thrash_server.ramtoggle_status()
+        self.assertEqual(lanes, [])
+        self.assertEqual(memory, {})
+
+    def test_empty_output_returns_empty_not_raise(self):
+        self._ramtoggle_stub_with("exit 0\n")
+        lanes, memory = thrash_server.ramtoggle_status()
+        self.assertEqual(lanes, [])
+        self.assertEqual(memory, {})
+
+    def test_nonzero_exit_returns_empty_not_raise(self):
+        self._ramtoggle_stub_with("echo 'boom' >&2; exit 1\n")
+        lanes, memory = thrash_server.ramtoggle_status()
+        self.assertEqual(lanes, [])
+        self.assertEqual(memory, {})
+
+    def test_toggle_on_known_lane_when_ramtoggle_fails(self):
+        """toggle() on a ramtoggle lane whose --json fails -> unknown lane,
+        not an exception (the lane list came back empty)."""
+        self._ramtoggle_stub_with("exit 1\n")
+        ok, msg = thrash_server.toggle("stub-lane", True)
+        self.assertFalse(ok)
+        self.assertIn("unknown lane", msg)
 
 
 class UzuProxyPortTest(LaneControlTestCase):

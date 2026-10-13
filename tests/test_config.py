@@ -65,7 +65,10 @@ class DeepMergeTest(ConfigLoadTestCase):
         self.assertEqual(cfg["server"]["host"], "127.0.0.1")  # from example
         # Sibling top-level sections survive the overlay too.
         self.assertIn("lanes", cfg)
-        self.assertIn("web", cfg)
+        # A value only the example defines survives the merge unchanged:
+        # the local override above never touched web.panel.
+        self.assertEqual(cfg["web"]["panel"], "web/panel.html")
+        self.assertEqual(cfg["uzu_proxy_lane"], "uzu-9b")
 
 
 class ExpandTest(ConfigLoadTestCase):
@@ -87,10 +90,8 @@ class ExpandTest(ConfigLoadTestCase):
 
     def test_load_expands_ramtoggle_but_not_labels(self):
         script = helpers.make_lane_script(self.tmpdir, 8801, "tilde-lane.sh")
-        stub_rt = os.path.join(self.tmpdir, "rt-stub")
-        with open(stub_rt, "w", encoding="utf-8") as f:
-            f.write("#!/bin/sh\nexit 0\n")
-        os.chmod(stub_rt, 0o755)
+        stub_rt = helpers.write_exec(
+            os.path.join(self.tmpdir, "rt-stub"), "#!/bin/sh\nexit 0\n")
         # A literal "~" that only expanduser can resolve: nest under $HOME.
         rel = os.path.relpath(stub_rt, os.path.expanduser("~"))
         helpers.write_config(self.tmpdir, [
@@ -182,6 +183,115 @@ class WebPathTest(ConfigLoadTestCase):
             str(config_mod.web_path({"web": {"panel": abs_path}}, "panel")),
             abs_path)
         self.assertIsNone(config_mod.web_path({}, "panel"))
+
+
+class FeatureBlockValidationTest(ConfigLoadTestCase):
+    """The optional feature blocks: defaults load, bad values SystemExit.
+
+    Each test drives load() through a temp EXAMPLE/LOCAL pair so the real
+    repo config is never read; EXAMPLE/LOCAL are restored in tearDown.
+    """
+
+    def setUp(self):
+        super().setUp()
+        config_dir = os.path.join(self.tmpdir, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        self.example_path = os.path.join(config_dir, "config.example.json")
+        self.local_path = os.path.join(config_dir, "config.local.json")
+        self.addCleanup(setattr, config_mod, "EXAMPLE", config_mod.EXAMPLE)
+        self.addCleanup(setattr, config_mod, "LOCAL", config_mod.LOCAL)
+        self._base_example = {
+            "server": {"host": "127.0.0.1", "port": 8790},
+            "lanes": [],
+        }
+
+    def _load_with(self, local):
+        """Write example (base only) + local overlay, return load() or raise."""
+        with open(self.example_path, "w", encoding="utf-8") as f:
+            json.dump(self._base_example, f)
+        with open(self.local_path, "w", encoding="utf-8") as f:
+            json.dump(local, f)
+        config_mod.EXAMPLE = Path(self.example_path)
+        config_mod.LOCAL = Path(self.local_path)
+        return config_mod.load()
+
+    def _assert_exits(self, local, needle):
+        with self.assertRaises(SystemExit) as ctx:
+            self._load_with(local)
+        self.assertIn(needle, str(ctx.exception))
+
+    # ---- defaults load cleanly ----------------------------------------
+
+    def test_feature_defaults_when_absent(self):
+        """No feature blocks at all -> every documented default appears."""
+        cfg = self._load_with({})
+        self.assertFalse(cfg["idle_unload"]["enabled"])
+        self.assertEqual(cfg["idle_unload"]["ttl_minutes"], 30)
+        self.assertEqual(cfg["idle_unload"]["lanes"], ["*"])
+        self.assertTrue(cfg["notifications"]["on_load"])
+        self.assertTrue(cfg["notifications"]["on_low_memory"])
+        self.assertEqual(cfg["notifications"]["low_memory_gb"], 6)
+        self.assertEqual(cfg["ram_guard"]["mode"], "warn")
+
+    def test_null_feature_block_defaults(self):
+        """Explicit null for a block is treated as absent -> defaults."""
+        cfg = self._load_with({"idle_unload": None})
+        self.assertFalse(cfg["idle_unload"]["enabled"])
+        self.assertEqual(cfg["idle_unload"]["ttl_minutes"], 30)
+
+    def test_good_feature_values_load(self):
+        cfg = self._load_with({
+            "idle_unload": {"enabled": True, "ttl_minutes": 5, "lanes": ["a"]},
+            "notifications": {"on_load": False, "low_memory_gb": 12.5},
+            "ram_guard": {"mode": "block"},
+        })
+        self.assertTrue(cfg["idle_unload"]["enabled"])
+        self.assertEqual(cfg["idle_unload"]["ttl_minutes"], 5)
+        self.assertEqual(cfg["idle_unload"]["lanes"], ["a"])
+        self.assertFalse(cfg["notifications"]["on_load"])
+        self.assertEqual(cfg["notifications"]["low_memory_gb"], 12.5)
+        self.assertEqual(cfg["ram_guard"]["mode"], "block")
+
+    # ---- bad idle_unload.ttl_minutes -----------------------------------
+
+    def test_idle_unload_ttl_zero_rejected(self):
+        self._assert_exits({"idle_unload": {"ttl_minutes": 0}},
+                           "idle_unload.ttl_minutes")
+
+    def test_idle_unload_ttl_negative_rejected(self):
+        self._assert_exits({"idle_unload": {"ttl_minutes": -1}},
+                           "idle_unload.ttl_minutes")
+
+    def test_idle_unload_ttl_string_rejected(self):
+        self._assert_exits({"idle_unload": {"ttl_minutes": "x"}},
+                           "idle_unload.ttl_minutes")
+
+    def test_idle_unload_ttl_bool_rejected(self):
+        """bool is an int subclass — must not sneak through as ttl_minutes."""
+        self._assert_exits({"idle_unload": {"ttl_minutes": True}},
+                           "idle_unload.ttl_minutes")
+
+    # ---- bad ram_guard.mode --------------------------------------------
+
+    def test_ram_guard_mode_invalid_rejected(self):
+        self._assert_exits({"ram_guard": {"mode": "yolo"}},
+                           "ram_guard.mode")
+
+    # ---- non-dict feature block ----------------------------------------
+
+    def test_idle_unload_string_block_rejected(self):
+        """A block that is present but not an object must fail loudly."""
+        self._assert_exits({"idle_unload": "x"}, "idle_unload must be an object")
+
+    # ---- bad notifications.low_memory_gb -------------------------------
+
+    def test_notifications_low_memory_gb_negative_rejected(self):
+        self._assert_exits({"notifications": {"low_memory_gb": -1}},
+                           "notifications.low_memory_gb")
+
+    def test_notifications_low_memory_gb_bool_rejected(self):
+        self._assert_exits({"notifications": {"low_memory_gb": True}},
+                           "notifications.low_memory_gb")
 
 
 if __name__ == "__main__":
