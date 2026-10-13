@@ -135,13 +135,16 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(n) if n else b""
 
     def do_GET(self):
-        path = self.path.rstrip("/")
+        # rstrip the path component only — the query string can legitimately
+        # end with '/' (e.g. ?id=lane1/), and self.path is "path?query".
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path.rstrip("/")
         if path == "/api/status":
             self._json(200, core.get_status())
         elif path == "/api/health":
             self._json(200, {"ok": True})
         elif path == "/api/logs":
-            self._serve_logs()
+            self._serve_logs(parsed)
         elif path == "/api/config":
             self._json(200, core.api_config())
         elif path in ("", "/index.html", "/panel"):
@@ -151,14 +154,15 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(404, {"error": "not found"})
 
-    def _serve_logs(self):
+    def _serve_logs(self, parsed=None):
         """GET /api/logs?id=<lane>&lines=N -> the lane's log tail.
 
         The path resolution and tail read live in core.read_log_tail() so the
         CLI can reuse them; this only shapes the HTTP contract.
         """
-        query = urllib.parse.urlparse(self.path).query
-        params = urllib.parse.parse_qs(query)
+        if parsed is None:
+            parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
         lane_id = (params.get("id") or [""])[0].strip()
         if not lane_id:
             self._json(400, {"error": "missing required query param: id"})

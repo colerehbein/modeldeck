@@ -180,17 +180,20 @@ def read_log_tail(lane_id, lines=_LOG_DEFAULT_LINES):
                 size = None
             if size is not None and size > _LOG_TAIL_READ_THRESHOLD:
                 # Back off from the end by more than lines * 1024 bytes to
-                # tolerate very long lines, then re-read forward if the
-                # block did not yield enough lines.
+                # tolerate very long lines, re-reading from further back
+                # until the block holds enough lines (or the whole file).
+                # data is kept disjoint (each pass replaces it with the
+                # superset it read), so bytes are never counted twice.
                 block = lines * 1024 + 1024
                 data = b""
                 while True:
-                    start = max(0, size - len(data) - block)
+                    start = max(0, size - block)
                     f.seek(start)
-                    data = f.read(size - start) + data
+                    data = f.read(size - start)
                     chunks = data.split(b"\n")
                     if len(chunks) > lines + 1 or start == 0:
                         break
+                    block *= 2
                 # split gives one more element than line breaks; the first
                 # is empty when the block starts at a line boundary.
                 out = b"\n".join(chunks[-(lines + 1):])
