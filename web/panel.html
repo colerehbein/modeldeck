@@ -62,7 +62,36 @@ button.danger:hover{background:var(--alert);color:#fff}
 .lane.off .pill{color:var(--off)}
 .lane .meta{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:3px}
 .lane .impact{font-size:12px;color:var(--muted);margin-top:6px;max-width:56ch}
+.lane .proj{font-family:var(--mono);font-size:11px;margin-top:5px}
+.lane .proj.ok{color:var(--on)}
+.lane .proj.warn{color:var(--load)}
+.lane .proj.bad{color:var(--alert)}
+.loglink{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;
+  background:none;border:none;color:var(--muted);padding:0;cursor:pointer;text-decoration:underline;
+  text-underline-offset:2px}
+.loglink:hover{background:none;color:var(--ink)}
+.loglink.off{color:var(--off)}
 .lane .ctl{display:flex;flex-direction:column;align-items:center;gap:4px}
+
+/* ---- log viewer drawer (academic-brutalism: hard borders, no gradients) ---- */
+.scrim{position:fixed;inset:0;background:rgba(22,24,29,.42);z-index:40}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(680px,92vw);z-index:41;
+  background:var(--panel);border-left:2px solid var(--ink);display:flex;flex-direction:column;
+  font-family:var(--mono)}
+.drawer .head{display:flex;justify-content:space-between;align-items:center;
+  padding:12px 16px;border-bottom:1px solid var(--ink)}
+.drawer .head .t{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.drawer .tools{display:flex;gap:8px;align-items:center;padding:10px 16px;
+  border-bottom:1px solid var(--line-soft);background:var(--bg)}
+.drawer .tools label{font-size:10px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.drawer select{font-family:var(--mono);font-size:11px;background:var(--panel);color:var(--ink);
+  border:1px solid var(--ink);padding:5px 8px;cursor:pointer}
+.drawer .caption{font-size:10px;color:var(--muted);padding:8px 16px 0;word-break:break-all}
+.drawer pre{margin:0;flex:1;overflow:auto;background:#16181d;color:#d7dae0;
+  font-family:var(--mono);font-size:11px;line-height:1.5;padding:12px 16px;white-space:pre;
+  border-top:1px solid var(--line-soft);margin-top:8px}
+.drawer .note{padding:12px 16px;font-size:11px;color:var(--muted)}
+.drawer .note.err{color:var(--alert)}
 
 .sw{position:relative;width:60px;height:32px;display:inline-block}
 .sw input{opacity:0;width:0;height:0}
@@ -119,6 +148,28 @@ let DATA = null;
 const pending = {};   // id -> {want:bool, since:epoch_ms}
 const pollers = {};   // id -> interval handle (guards against duplicate pollers)
 
+// ---- log viewer -------------------------------------------------------
+// /api/logs may not be deployed yet; probe once (with a real lane id, so a
+// working server doesn't 404 on a fake id) after the first status load, so
+// the button goes inert instead of every click failing.
+let LOGS_BROKEN = true;
+let logLines = 300;              // selected tail length
+let logLane = null;              // {id,label} currently open
+let logState = 'idle';           // idle | loading | ok | missing | error
+let logsProbed = false;
+
+function probeLogs(){
+  if(logsProbed) return;
+  const lanes = (window.DATA && DATA.lanes) || [];
+  if(!lanes.length) return;      // wait until status has populated lanes
+  logsProbed = true;
+  const probeId = encodeURIComponent(lanes[0].id);
+  fetch(API+'/api/logs?id='+probeId+'&lines=1')
+    .then(r=>{ LOGS_BROKEN = !r.ok; })
+    .catch(()=>{ LOGS_BROKEN = true; })
+    .finally(()=>{ try{ render(); }catch(e){} });
+}
+
 function esc(s){return (s||"").replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 function msg(t,err){const e=document.getElementById('msg');e.textContent=t;e.className=err?'err':''}
 
@@ -130,12 +181,15 @@ async function refresh(){
     document.getElementById('srv').className='srv';
     document.getElementById('srvtxt').textContent='live';
     render();
+    probeLogs();
   }catch(e){
     document.getElementById('srv').className='srv down';
     document.getElementById('srvtxt').textContent='server down';
     msg('cannot reach the thrash server — is it running?', true);
   }
 }
+
+function gb(mb){return (mb/1024).toFixed(mb>=10240?0:1)}
 
 function render(){
   const m = DATA.memory||{};
@@ -154,7 +208,7 @@ function render(){
     !hasTotal ? '—' : (low? 'low — free a lane' : (pct<45? 'ok':'comfortable'));
   document.getElementById('memfill').style.width=pct+'%';
   document.getElementById('memsub').textContent =
-    `wired ${((m.wired_mb||0)/1024).toFixed(1)} GB · compressed ${((m.compressed_mb||0)/1024).toFixed(1)} GB · ${hasTotal?pct+'%':'?'} available`;
+    `wired ${gb(m.wired_mb||0)} GB · compressed ${gb(m.compressed_mb||0)} GB · ${hasTotal?pct+'%':'?'} available`;
 
   const box=document.getElementById('lanes'); box.innerHTML='';
   (DATA.lanes||[]).forEach(l=>{
@@ -182,6 +236,15 @@ function render(){
     impact.textContent = l.impact || '';
     info.appendChild(nm); info.appendChild(meta); info.appendChild(impact);
 
+    // RAM projection hint — only for lanes that are coming up, only when we know the size
+    if(state==='loading' && l.ram_mb > 0 && hasTotal){
+      const proj = avail - l.ram_mb;
+      const cls = proj < 2048 ? 'bad' : (proj < 6144 ? 'warn' : 'ok');
+      const projEl=document.createElement('div'); projEl.className='proj '+cls;
+      projEl.textContent = `after start: ~${gb(proj)} GB free`+(proj<2048?' — not enough headroom':'');
+      info.appendChild(projEl);
+    }
+
     const ctl=document.createElement('div'); ctl.className='ctl';
     const label=document.createElement('label'); label.className='sw '+(state==='loading'?'loading':'');
     const input=document.createElement('input'); input.type='checkbox';
@@ -194,6 +257,15 @@ function render(){
     const st=document.createElement('span'); st.className='st '+state;
     st.textContent = state==='loading'?'…':state;
     ctl.appendChild(label); ctl.appendChild(st);
+
+    // per-lane log viewer entry point — stays clickable even when the endpoint
+    // is missing, so the drawer can explain itself instead of a dead button
+    const lb=document.createElement('button'); lb.className='loglink'+(LOGS_BROKEN?' off':'');
+    lb.type='button';
+    lb.textContent='logs';
+    lb.title = LOGS_BROKEN ? 'log viewer unavailable on this server' : `view ${l.id} log`;
+    lb.addEventListener('click', ()=>openLogs(l.id, l.label||l.id));
+    ctl.appendChild(lb);
 
     div.appendChild(info); div.appendChild(ctl);
     box.appendChild(div);
@@ -240,12 +312,119 @@ function pollUntilSettled(id, want){
 
 async function freeAll(){
   msg('freeing big models…');
-  for(const id of ['qwen-35b','qwen-9b']){
+  // target every lane whose configured RAM cost is "big" (>8GB), rather than
+  // hardcoded ids — so the button works for any config, not just the defaults
+  const big=(DATA.lanes||[]).filter(l=>(l.ram_mb||0)>8000).map(l=>l.id);
+  for(const id of big){
     pending[id]={want:false,since:Date.now()};
     try{await fetch(API+'/api/toggle',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({id,on:false})});}catch(e){}
   }
-  setTimeout(()=>{delete pending['qwen-35b'];delete pending['qwen-9b'];refresh();msg('freed');},2000);
+  setTimeout(()=>{for(const id of big)delete pending[id];refresh();msg(big.length?'freed':'no big lanes to free');},2000);
+}
+
+// ---- log viewer ------------------------------------------------------
+function ensureDrawer(){
+  let d = document.getElementById('drawer');
+  if(d) return d;
+
+  const scrim=document.createElement('div'); scrim.className='scrim'; scrim.id='logscrim';
+  scrim.addEventListener('click', closeLogs);
+
+  d=document.createElement('div'); d.className='drawer'; d.id='drawer'; d.setAttribute('role','dialog');
+  d.setAttribute('aria-label','lane logs');
+
+  const head=document.createElement('div'); head.className='head';
+  const t=document.createElement('span'); t.className='t'; t.id='logtitle';
+  const close=document.createElement('button'); close.type='button'; close.textContent='close';
+  close.addEventListener('click', closeLogs);
+  head.appendChild(t); head.appendChild(close);
+
+  const tools=document.createElement('div'); tools.className='tools';
+  const lab=document.createElement('label'); lab.textContent='lines';
+  const sel=document.createElement('select'); sel.id='logsel';
+  [100,300,1000].forEach(n=>{
+    const o=document.createElement('option'); o.value=String(n);
+    o.textContent=String(n); if(n===logLines) o.selected=true;
+    sel.appendChild(o);
+  });
+  sel.addEventListener('change', ()=>{ logLines=parseInt(sel.value,10)||300; loadLogs(); });
+  tools.appendChild(lab); tools.appendChild(sel);
+
+  const cap=document.createElement('div'); cap.className='caption'; cap.id='logpath';
+  const body=document.createElement('div'); body.id='logbody'; body.style.display='flex';
+  body.style.flexDirection='column'; body.style.flex='1'; body.style.minHeight='0';
+
+  d.appendChild(head); d.appendChild(tools); d.appendChild(cap); d.appendChild(body);
+  document.body.appendChild(scrim); document.body.appendChild(d);
+  if(!window.__logEscBound){
+    window.__logEscBound = true;
+    document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeLogs(); });
+  }
+  return d;
+}
+
+function closeLogs(){
+  const d=document.getElementById('drawer'); if(d) d.remove();
+  const s=document.getElementById('logscrim'); if(s) s.remove();
+  logLane=null; logState='idle';
+}
+
+function openLogs(id, label){
+  logLane={id,label};
+  logState='loading';
+  const d=ensureDrawer();
+  document.getElementById('logtitle').textContent = `logs · ${label}`;
+  document.getElementById('logpath').textContent = 'resolving…';
+  d.querySelector('#logbody').replaceChildren();
+  const note=document.createElement('div'); note.className='note'; note.id='lognote';
+  note.textContent='fetching…';
+  d.querySelector('#logbody').appendChild(note);
+  loadLogs();
+}
+
+async function loadLogs(){
+  if(!logLane) return;
+  const body=document.getElementById('logbody');
+  const pathEl=document.getElementById('logpath');
+  body.replaceChildren();
+  const note=document.createElement('div'); note.className='note'; note.id='lognote';
+  note.textContent='fetching…';
+  body.appendChild(note);
+  pathEl.textContent='';
+  logState='loading';
+  try{
+    const r=await fetch(`${API}/api/logs?id=${encodeURIComponent(logLane.id)}&lines=${logLines}`);
+    if(r.status===404 || r.status===501){
+      logState='missing';
+      note.className='note err';
+      note.textContent='logs unavailable — the server has no /api/logs endpoint yet.';
+      return;
+    }
+    if(!r.ok){ logState='error'; note.className='note err'; note.textContent=`could not read logs (http ${r.status}).`; return; }
+    const d=await r.json();
+    const path=document.getElementById('logpath');
+    path.textContent = d.path ? `path: ${d.path}` : 'path: (server did not report one)';
+    if(d.exists === false || !d.tail){
+      logState='missing';
+      note.className='note';
+      note.textContent = d.exists === false
+        ? `no log file yet for ${logLane.label} — start the lane to create one.`
+        : `log file is empty.`;
+      return;
+    }
+    logState='ok';
+    note.remove();
+    const pre=document.createElement('pre'); pre.id='logpre';
+    // textContent, never innerHTML — log lines are untrusted server data
+    pre.textContent = d.tail;
+    body.appendChild(pre);
+    pre.scrollTop = pre.scrollHeight;   // open at the newest line
+  }catch(e){
+    logState='error';
+    note.className='note err';
+    note.textContent='could not reach the log endpoint.';
+  }
 }
 
 refresh();

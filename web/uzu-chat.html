@@ -19,6 +19,12 @@ header{padding:12px 18px;border-bottom:1px solid var(--line);display:flex;
 header h1{font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:.03em}
 header .stat{font-family:var(--mono);font-size:11px;color:var(--muted)}
 header .stat b{color:var(--accent)}
+.hdr-right{display:flex;gap:14px;align-items:center;min-width:0}
+#lanes{background:var(--bg);border:1px solid var(--line);color:var(--ink);
+  font-family:var(--mono);font-size:11px;padding:5px 8px;border-radius:6px;
+  max-width:300px;cursor:pointer}
+#lanes:focus{outline:none;border-color:var(--accent)}
+#lanes option:disabled{color:var(--muted)}
 #chat{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px}
 .msg{max-width:80%;padding:10px 14px;border-radius:10px;font-size:14px;
   line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
@@ -41,7 +47,10 @@ button:disabled{opacity:.4;cursor:wait}
 <body>
 <header>
   <h1>UZU 9B · FAST CHAT</h1>
-  <span class="stat">direct to :8096 · <b id="lastspeed">—</b></span>
+  <div class="hdr-right">
+    <select id="lanes" title="Target lane"></select>
+    <span class="stat"><span id="lanestat"></span> · <b id="lastspeed">—</b></span>
+  </div>
 </header>
 <div id="chat"></div>
 <div class="hint">Talks straight to the uzu server with a minimal prompt — no agent scaffolding, so you get the full ~92 t/s. Best with predictable/structured requests.</div>
@@ -53,7 +62,67 @@ button:disabled{opacity:.4;cursor:wait}
 const API=location.origin+'/api/uzu-chat';
 const MODEL="alibaba:qwen3.5:9b:mirai:mirai-m:4";
 const chat=document.getElementById('chat'), inp=document.getElementById('in'),
-      send=document.getElementById('send'), speedEl=document.getElementById('lastspeed');
+      send=document.getElementById('send'), speedEl=document.getElementById('lastspeed'),
+      laneSel=document.getElementById('lanes'), laneStat=document.getElementById('lanestat');
+// fallback when /api/config isn't deployed yet: the configured proxy lane
+let lanes=[{id:'uzu-9b',label:'uzu-9b (:8096)',port:8096}];
+let CFG=null;   // /api/config payload once it lands, else null
+
+function mk(tag,cls,txt){const e=document.createElement(tag);
+  if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e;}
+
+function setLaneStat(){
+  const o=laneSel.selectedOptions[0];
+  if(!o){laneStat.textContent=''; return;}
+  laneStat.textContent=o.getAttribute('data-port')
+    ? o.getAttribute('data-label')+' :'+o.getAttribute('data-port')
+    : o.getAttribute('data-label');
+}
+
+// pick the configured proxy lane, else the first loaded one
+function defaultIndex(){
+  const i=lanes.findIndex(l=>l.port===(CFG?CFG.uzu_port:null));
+  return i>=0?i:0;
+}
+
+function paintLanes(){
+  laneSel.textContent='';
+  for(const l of lanes){
+    const o=mk('option');
+    o.value=l.id;
+    o.setAttribute('data-port', l.port!=null?l.port:'');
+    o.setAttribute('data-label', l.label||l.id);
+    o.textContent=l.label||l.id;
+    laneSel.appendChild(o);
+  }
+  laneSel.selectedIndex=defaultIndex();
+  setLaneStat();
+}
+
+async function loadLanes(){
+  try{
+    const r=await fetch(location.origin+'/api/config');
+    if(r.ok){
+      const j=await r.json();
+      if(Array.isArray(j.lanes)&&j.lanes.length){ lanes=j.lanes; CFG=j; }
+    }
+  }catch(e){/* keep the single-lane fallback */}
+  paintLanes();
+  // nicety: mark lanes that are currently off (skip if /api/status is absent)
+  try{
+    const r=await fetch(location.origin+'/api/status');
+    if(!r.ok) return;
+    const j=await r.json();
+    const off={};
+    for(const l of (j.lanes||[])) if(l.on===false) off[l.id]=true;
+    for(const o of laneSel.options){
+      const live=lanes.find(l=>l.id===o.value);
+      if(off[live&&live.id]){ o.disabled=true; o.textContent+=' (off)'; }
+    }
+  }catch(e){}
+}
+laneSel.onchange=setLaneStat;
+loadLanes();
 
 function add(role){
   const d=document.createElement('div');
@@ -73,9 +142,14 @@ async function go(){
   const b=add('bot'); b.body.textContent='…'; b.meta.textContent='streaming';
   const t0=performance.now();
   let content='', reasoning='', toks=0, spec=0;
+  const lane=laneSel.value||'uzu-9b';
+  // use the selected lane's model id when /api/config provided one, else the
+  // default (keeps single-lane fallback working when config is unavailable)
+  const laneObj=lanes.find(l=>l.id===lane);
+  const model=(laneObj&&laneObj.model)||MODEL;
   try{
     const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:MODEL,messages:[{role:'user',content:text}],
+      body:JSON.stringify({model,lane,messages:[{role:'user',content:text}],
         max_tokens:2048,temperature:0.6,stream:true})});
     // fetch resolves on HTTP errors too — surface the proxy's real error
     if(!r.ok){
@@ -128,9 +202,10 @@ async function go(){
   }catch(e){
     // surface the real proxy error (502 detail); fall back to the connectivity
     // hint for genuine network failures where no message was constructed
+    const who=laneStat.textContent||'the selected lane';
     const msg = (e && e.message && /proxy error/.test(e.message))
-      ? e.message + ' — is the uzu lane up? (uzu-9b-lane start, or flip the switch in Thrash)'
-      : 'cannot reach the uzu lane (via the thrash proxy) — is it up? (uzu-9b-lane start, or flip the switch in Thrash)';
+      ? e.message + ' — is '+who+' up? (flip it on in Thrash, or pick another lane)'
+      : 'cannot reach '+who+' (via the thrash proxy) — is it up? (flip it on in Thrash, or pick another lane)';
     b.body.textContent=msg;
     b.meta.textContent='';
   }

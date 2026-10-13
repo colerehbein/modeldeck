@@ -18,6 +18,25 @@
   "_uzu_proxy_comment": "Which lane the /api/uzu-chat SSE proxy forwards to (must match a lane id below).",
   "uzu_proxy_lane": "uzu-9b",
 
+  "_idle_unload_comment": "OPTIONAL. Auto-unload lanes after they have been idle. enabled defaults to false (no auto-unload); ttl_minutes is idle time before unload; lanes is a list of lane ids, or [\"*\"] for every lane.",
+  "idle_unload": {
+    "enabled": false,
+    "ttl_minutes": 30,
+    "lanes": ["*"]
+  },
+
+  "_notifications_comment": "OPTIONAL. on_load: notify when a lane finishes loading. on_low_memory: warn when free RAM drops below low_memory_gb.",
+  "notifications": {
+    "on_load": true,
+    "on_low_memory": true,
+    "low_memory_gb": 6
+  },
+
+  "_ram_guard_comment": "OPTIONAL. mode is \"warn\" (surface the problem, still allow the load) or \"block\" (refuse loads that would breach the limit).",
+  "ram_guard": {
+    "mode": "warn"
+  },
+
   "lanes": [
     {
       "id": "qwen-35b",
@@ -26,7 +45,9 @@
       "port": 8099,
       "approx_mb": 18000,
       "impact": "Smart daily driver. 64K context, Q8 KV. Big RAM cost (~18GB).",
-      "script": "lanes/qwen-lane.sh"
+      "script": "lanes/qwen-lane.sh",
+      "_log_comment": "OPTIONAL: per-lane log file. Omit to use the default log location.",
+      "log": "logs/qwen-lane.log"
     },
     {
       "id": "qwen-9b",

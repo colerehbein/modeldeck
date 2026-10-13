@@ -22,6 +22,23 @@ ad hoc from a panel or the menu bar, with live free-memory so you can see the
 cost before you commit to it. One big model at a time, deliberately — instead of
 all of them at once, accidentally.
 
+## Install
+
+```bash
+git clone <this repo> && cd thrash
+./install.sh                 # preview the plan (no changes)
+./install.sh --yes           # apply: config, menu-bar build, launchd
+```
+
+One command: it copies `config/config.example.json` to `config/config.local.json`
+(never overwriting an existing one), builds the menu-bar app, and registers the
+launchd agents that start the server and menu bar at login. Re-running is safe
+and idempotent. `./install.sh --uninstall` stops the services and moves the
+launchd plists to `~/Trash/hermes` (nothing is deleted). `./install.sh --help`
+for details.
+
+Then open <http://127.0.0.1:8790>.
+
 ## What it does
 
 - **Control panel** (`web/panel.html`) — a switch per lane, live RAM with a
@@ -34,8 +51,18 @@ all of them at once, accidentally.
 
 ![Streaming chat](docs/chat.png)
 
-- **One JSON API** — the panel and menu bar share a single source of truth via
-  the stdlib Python server.
+- **CLI** — `./thrash on|off|toggle|status [--json]|logs|doctor` for the same
+  lanes from the terminal, including a `doctor` that checks your environment.
+- **Idle auto-unload** — optionally stop lanes after a TTL of inactivity, so a
+  forgotten lane doesn't hold RAM all day (off by default; enable in config).
+- **RAM guard** — live free-memory readout and a low-memory warning before you
+  commit to a big model.
+- **Notifications** — macOS notifications when a lane finishes loading, or when
+  free memory runs low.
+- **Log viewer** — per-lane log tail in the panel and via `./thrash logs <id>`.
+- **Chat lane-picker** — pick which lane the chat talks to.
+- **One JSON API** — the panel, menu bar, and CLI share a single source of
+  truth via the stdlib Python server.
 
 ## Why not just use LM Studio / Ollama?
 
@@ -56,11 +83,13 @@ you already run:
 ```
 server/thrash_server.py    stdlib HTTP control backend (the source of truth)
 server/config.py           config loader (deep-merge + validation)
+thrash                     CLI (on/off/status/logs/doctor)
 lanes/*.sh                 one start/stop/status script per model lane
 web/panel.html             control panel UI
 web/uzu-chat.html          streaming chat UI
 menubar/Thrash.swift       native menu-bar app (AppKit)
 menubar/build.sh           compiles the binary + .app bundle
+install.sh                 one-command setup (config + build + launchd)
 config/config.example.json every machine-specific value lives here
 ```
 
@@ -68,6 +97,16 @@ No dependencies beyond Python 3 stdlib for the server, and Swift for the menu
 bar. The web assets are plain HTML/CSS/JS.
 
 ## Quick start
+
+The installer does steps 1–3 for you:
+
+```bash
+./install.sh --yes           # config + menu-bar build + launchd
+open http://127.0.0.1:8790   # panel
+./thrash status              # CLI view of the same lanes
+```
+
+Or do it by hand:
 
 ```bash
 # 1. configure
@@ -81,8 +120,6 @@ $EDITOR config/config.local.json   # set your model paths, ports, backends
 ./menubar/build.sh
 open -a Thrash
 ```
-
-Then open <http://127.0.0.1:8790> for the panel.
 
 ## Configuration
 
@@ -114,7 +151,11 @@ scripts (e.g. `QWEN35B_PORT`, `MODEL_GGUF`, `UZU_CLI`).
 
 ## Boot persistence
 
-See `docs/launchd.md` for a launchd template that starts the server at login.
+`./install.sh` handles this — it writes and loads the launchd agents for the
+server (`com.cole.thrash`) and the menu bar (`com.cole.thrash-menubar`),
+logging to `~/.hermes/logs`. `./install.sh --uninstall` stops them and moves the
+plists to `~/Trash/hermes`. See `docs/launchd.md` for the manual plist
+reference.
 
 ## License
 
