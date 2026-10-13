@@ -237,6 +237,57 @@ def api_config():
     }
 
 
+# --- Graceful drain ---------------------------------------------------------
+#
+# Stopping a lane used to be a hard `pkill`, which severs an active chat
+# stream mid-token. Before the script's stop runs, toggle() now waits
+# (bounded) for in-flight proxied requests to finish: the SSE proxy in
+# thrash_server counts each streaming request against its lane for the
+# duration of the stream, and drain() polls that counter to zero.
+#
+# DEFAULT ON and harmless when nothing is proxied: an idle lane's counter is
+# absent, so drain() returns immediately and the stop path is unchanged.
+
+ACTIVE_REQUESTS = {}  # lane_id -> count of in-flight proxied requests
+
+# How long toggle(off) waits for in-flight requests before stopping anyway.
+DRAIN_TIMEOUT_S = 15
+
+
+def begin_request(lane_id):
+    """Count one in-flight proxied request against lane_id."""
+    if lane_id is None:
+        return
+    ACTIVE_REQUESTS[lane_id] = ACTIVE_REQUESTS.get(lane_id, 0) + 1
+
+
+def end_request(lane_id):
+    """Release one in-flight request; the count floors at zero."""
+    if lane_id is None:
+        return
+    remaining = ACTIVE_REQUESTS.get(lane_id, 0) - 1
+    if remaining > 0:
+        ACTIVE_REQUESTS[lane_id] = remaining
+    else:
+        ACTIVE_REQUESTS.pop(lane_id, None)
+
+
+def drain(lane_id, timeout_s=DRAIN_TIMEOUT_S):
+    """Wait up to timeout_s for lane_id's in-flight requests to reach zero.
+
+    Returns True when the lane is quiet within the budget, False when the
+    timeout expires with requests still active. Polls every 0.25s and
+    returns immediately when nothing is in flight, so an idle lane costs
+    no wait at all.
+    """
+    deadline = time.time() + timeout_s
+    while ACTIVE_REQUESTS.get(lane_id, 0) > 0:
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.25)
+    return True
+
+
 def toggle(lane_id, turn_on):
     if lane_id in SCRIPT_LANES:
         lane = SCRIPT_LANES[lane_id]
@@ -275,8 +326,22 @@ def toggle(lane_id, turn_on):
                 return False, (f"{lane_id} failed to start (exit {proc.returncode}) "
                                "— see the lane log")
             return True, f"{warn_note}{lane_id} starting (loads in background)"
+        # Graceful drain: let in-flight proxied requests finish before the
+        # script hard-stops the process, so stopping a lane mid-chat does
+        # not sever an active stream. Bounded — a wedged request can never
+        # hang the panel, we just report what was still in flight. The
+        # timeout is read at call time (not bound as a default) so a test
+        # or config can shorten the wait.
+        drained = drain(lane_id, timeout_s=DRAIN_TIMEOUT_S)
+        active = ACTIVE_REQUESTS.get(lane_id, 0)
         rc, out, err = run([script, "stop"], timeout=20)
-        return rc == 0, (out.strip() or err.strip() or f"stop exited {rc}")
+        msg = out.strip() or err.strip() or f"stop exited {rc}"
+        if drained:
+            msg = f"{msg} (drained)"
+        elif active:
+            msg = (f"{msg} (stopped with {active} request(s) still active "
+                   f"after {DRAIN_TIMEOUT_S}s drain)")
+        return rc == 0, msg
     if RAMTOGGLE:
         rt_lanes, _ = ramtoggle_status()
         if lane_id not in {l["id"] for l in rt_lanes}:

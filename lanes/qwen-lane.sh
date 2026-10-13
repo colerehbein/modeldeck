@@ -34,7 +34,17 @@ case "${1:-}" in
       >>"$LOG" 2>&1
     ;;
   stop)
-    pkill -f "llama-server .*--port[= ]${PORT}([^0-9]|$)" 2>/dev/null && echo "stopped" || echo "not running"
+    PAT="llama-server .*--port[= ]${PORT}([^0-9]|$)"
+    # Graceful: SIGTERM first, give the server ~3s to close active
+    # connections (an in-flight stream survives), then SIGKILL whatever
+    # is still alive. The anchored pattern is unchanged.
+    pkill -TERM -f "$PAT" 2>/dev/null || { echo "not running"; exit 0; }
+    for _ in 1 2 3 4 5 6; do
+      pgrep -f "$PAT" >/dev/null 2>&1 || break
+      sleep 0.5
+    done
+    pkill -KILL -f "$PAT" 2>/dev/null || true
+    echo "stopped"
     ;;
   status)
     if is_up; then

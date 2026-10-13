@@ -250,6 +250,10 @@ class Handler(BaseHTTPRequestHandler):
         # Activity signal for the idle reaper: a proxied chat message counts
         # as use of the target lane, so it does not get reaped mid-conversation.
         core.touch_activity(lane_id or core.UZU_PROXY_LANE)
+        # Drain accounting: this stream is an in-flight request against its
+        # lane for as long as it lasts, so toggle(off) can wait for it to
+        # finish instead of killing the server mid-stream.
+        core.begin_request(lane_id or core.UZU_PROXY_LANE)
         try:
             rreq = urllib.request.Request(
                 f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -280,6 +284,7 @@ class Handler(BaseHTTPRequestHandler):
             if not headers_sent:
                 self._json(502, {"error": f"uzu lane unreachable: {e}"})
         finally:
+            core.end_request(lane_id or core.UZU_PROXY_LANE)
             if upstream is not None:
                 try:
                     upstream.close()
