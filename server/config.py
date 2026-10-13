@@ -74,6 +74,96 @@ def _validate(cfg):
         )
 
 
+# Optional, defaulted feature blocks. Populated in load() so callers can read
+# cfg["idle_unload"]["enabled"] etc. without guarding for absence, and so configs
+# written before these keys existed keep working unchanged.
+_FEATURE_DEFAULTS = {
+    "idle_unload": {
+        "enabled": False,
+        "ttl_minutes": 30,
+        "lanes": ["*"],  # "*" = every lane; otherwise a list of lane ids
+    },
+    "notifications": {
+        "on_load": True,
+        "on_low_memory": True,
+        "low_memory_gb": 6,
+    },
+    "ram_guard": {
+        "mode": "warn",  # "warn" | "block"
+    },
+}
+
+_RAM_GUARD_MODES = ("warn", "block")
+
+
+def _is_number(value):
+    """True for a real JSON number (bool is not a number here)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _apply_feature_defaults(cfg):
+    """Fill missing optional keys with defaults, then validate supplied values.
+
+    Fills first so a partially-specified block is never rejected for a key the
+    user did not set; only explicitly-provided values are checked.
+    """
+    for key, defaults in _FEATURE_DEFAULTS.items():
+        section = cfg.setdefault(key, {})
+        if not isinstance(section, dict):
+            raise SystemExit(
+                f"config error — {key} must be an object, got "
+                f"{type(section).__name__}"
+            )
+        for sub, default in defaults.items():
+            section.setdefault(sub, default)
+
+    idle = cfg["idle_unload"]
+    if not isinstance(idle["ttl_minutes"], int) or isinstance(
+        idle["ttl_minutes"], bool
+    ) or idle["ttl_minutes"] <= 0:
+        raise SystemExit(
+            "config error — idle_unload.ttl_minutes must be an integer > 0, "
+            f"got {idle['ttl_minutes']!r}"
+        )
+    if not isinstance(idle["lanes"], list):
+        raise SystemExit(
+            "config error — idle_unload.lanes must be a list of lane ids "
+            f'(or ["*"]), got {idle["lanes"]!r}'
+        )
+
+    notes = cfg["notifications"]
+    if not _is_number(notes["low_memory_gb"]) or notes["low_memory_gb"] <= 0:
+        raise SystemExit(
+            "config error — notifications.low_memory_gb must be a number > 0, "
+            f"got {notes['low_memory_gb']!r}"
+        )
+
+    if cfg["ram_guard"]["mode"] not in _RAM_GUARD_MODES:
+        raise SystemExit(
+            "config error — ram_guard.mode must be one of "
+            + " | ".join(_RAM_GUARD_MODES)
+            + f", got {cfg['ram_guard']['mode']!r}"
+        )
+    return cfg
+
+
+def feature_cfg(cfg, key):
+    """Merged view of an optional feature block, defaulted.
+
+    load() already populates every block, so this just returns the live dict;
+    it exists for callers handed a config that predates these keys.
+    """
+    defaults = _FEATURE_DEFAULTS.get(key)
+    if defaults is None:
+        raise KeyError(f"unknown feature block: {key!r}")
+    section = cfg.get(key)
+    if not isinstance(section, dict):
+        return dict(defaults)
+    merged = dict(defaults)
+    merged.update(section)
+    return merged
+
+
 def load():
     with open(EXAMPLE, "r", encoding="utf-8") as f:
         cfg = json.load(f)
@@ -90,6 +180,16 @@ def load():
         lane.setdefault("label", lane["id"])
         lane.setdefault("impact", "")
         lane.setdefault("approx_mb", None)
+    # Optional per-lane log path (string); no validation beyond type.
+    for lane in cfg.get("lanes", []):
+        log = lane.get("log")
+        if log is not None and not isinstance(log, str):
+            raise SystemExit(
+                f"config error — lanes[{lane.get('id', '?')}].log must be a "
+                f"string path, got {type(log).__name__}"
+            )
+    # Optional feature blocks: fill defaults, then validate supplied values.
+    _apply_feature_defaults(cfg)
     cfg["_repo_root"] = str(REPO_ROOT)
     return cfg
 
