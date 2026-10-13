@@ -10,6 +10,7 @@ repo-relative script/web paths against the repo root.
 Every machine-specific value (ports, script paths, model dirs) lives in
 config so the code stays generic and reusable.
 """
+import copy
 import json
 import os
 from pathlib import Path
@@ -19,8 +20,8 @@ CONFIG_DIR = REPO_ROOT / "config"
 EXAMPLE = CONFIG_DIR / "config.example.json"
 LOCAL = CONFIG_DIR / "config.local.json"
 
-# Keys whose string values are filesystem paths (safe to expanduser).
-_PATH_KEYS = {"ramtoggle", "script"}
+# Keys whose string values are filesystem paths (safe to expanduser + resolve).
+_PATH_KEYS = {"ramtoggle", "script", "log"}
 
 
 def _deep_merge(base, overlay):
@@ -47,22 +48,24 @@ def _expand(value, key=None):
 
 
 def _resolve_repo_relative(cfg):
-    """Script paths in lane defs are repo-relative; make them absolute."""
-    for lane in cfg.get("lanes", []):
-        script = lane.get("script")
-        if script and not os.path.isabs(os.path.expanduser(script)):
-            lane["script"] = str(REPO_ROOT / script)
+    """Script/log paths in lane defs are repo-relative; make them absolute."""
+    for lane in cfg.get("lanes", []) or []:
+        for field in ("script", "log"):
+            path = lane.get(field)
+            if path and not os.path.isabs(os.path.expanduser(path)):
+                lane[field] = str(REPO_ROOT / path)
     return cfg
 
 
 def _validate(cfg):
     """Fail loudly at startup with a clear message on missing required keys."""
     missing = []
-    if "host" not in cfg.get("server", {}):
+    server = cfg.get("server") or {}
+    if "host" not in server:
         missing.append("server.host")
-    if "port" not in cfg.get("server", {}):
+    if "port" not in server:
         missing.append("server.port")
-    for i, lane in enumerate(cfg.get("lanes", [])):
+    for i, lane in enumerate(cfg.get("lanes") or []):
         if not lane.get("id"):
             missing.append(f"lanes[{i}].id")
         if not lane.get("script"):
@@ -77,91 +80,74 @@ def _validate(cfg):
 # Optional, defaulted feature blocks. Populated in load() so callers can read
 # cfg["idle_unload"]["enabled"] etc. without guarding for absence, and so configs
 # written before these keys existed keep working unchanged.
+#
+# Each value maps a sub-key to (default, validator, human_type). The validator
+# returns True when the value is acceptable. Table-driven so the bool-subclass-
+# of-int trap is handled identically for every key.
+def _pos_int(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _pos_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+
+
+def _a_bool(v):
+    return isinstance(v, bool)
+
+
+def _a_list(v):
+    return isinstance(v, list)
+
+
+def _a_mode(v):
+    return v in ("warn", "block")
+
+
 _FEATURE_DEFAULTS = {
     "idle_unload": {
-        "enabled": False,
-        "ttl_minutes": 30,
-        "lanes": ["*"],  # "*" = every lane; otherwise a list of lane ids
+        "enabled": (False, _a_bool, "a boolean"),
+        "ttl_minutes": (30, _pos_int, "an integer > 0"),
+        "lanes": (["*"], _a_list, 'a list of lane ids (or ["*"])'),
     },
     "notifications": {
-        "on_load": True,
-        "on_low_memory": True,
-        "low_memory_gb": 6,
+        "on_load": (True, _a_bool, "a boolean"),
+        "on_low_memory": (True, _a_bool, "a boolean"),
+        "low_memory_gb": (6, _pos_num, "a number > 0"),
     },
     "ram_guard": {
-        "mode": "warn",  # "warn" | "block"
+        "mode": ("warn", _a_mode, 'one of "warn" | "block"'),
     },
 }
-
-_RAM_GUARD_MODES = ("warn", "block")
-
-
-def _is_number(value):
-    """True for a real JSON number (bool is not a number here)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _apply_feature_defaults(cfg):
     """Fill missing optional keys with defaults, then validate supplied values.
 
     Fills first so a partially-specified block is never rejected for a key the
-    user did not set; only explicitly-provided values are checked.
+    user did not set; only the final (defaulted-or-supplied) values are checked.
+    Defaults are deep-copied so mutating a loaded config never poisons the
+    module-level default for the next load().
     """
-    for key, defaults in _FEATURE_DEFAULTS.items():
-        section = cfg.setdefault(key, {})
+    for key, spec in _FEATURE_DEFAULTS.items():
+        section = cfg.get(key)
+        if section is None:
+            section = {}
         if not isinstance(section, dict):
             raise SystemExit(
                 f"config error — {key} must be an object, got "
                 f"{type(section).__name__}"
             )
-        for sub, default in defaults.items():
-            section.setdefault(sub, default)
-
-    idle = cfg["idle_unload"]
-    if not isinstance(idle["ttl_minutes"], int) or isinstance(
-        idle["ttl_minutes"], bool
-    ) or idle["ttl_minutes"] <= 0:
-        raise SystemExit(
-            "config error — idle_unload.ttl_minutes must be an integer > 0, "
-            f"got {idle['ttl_minutes']!r}"
-        )
-    if not isinstance(idle["lanes"], list):
-        raise SystemExit(
-            "config error — idle_unload.lanes must be a list of lane ids "
-            f'(or ["*"]), got {idle["lanes"]!r}'
-        )
-
-    notes = cfg["notifications"]
-    if not _is_number(notes["low_memory_gb"]) or notes["low_memory_gb"] <= 0:
-        raise SystemExit(
-            "config error — notifications.low_memory_gb must be a number > 0, "
-            f"got {notes['low_memory_gb']!r}"
-        )
-
-    if cfg["ram_guard"]["mode"] not in _RAM_GUARD_MODES:
-        raise SystemExit(
-            "config error — ram_guard.mode must be one of "
-            + " | ".join(_RAM_GUARD_MODES)
-            + f", got {cfg['ram_guard']['mode']!r}"
-        )
+        for sub, (default, validator, human) in spec.items():
+            if sub not in section:
+                section[sub] = copy.deepcopy(default)
+            if not validator(section[sub]):
+                raise SystemExit(
+                    f"config error — {key}.{sub} must be {human}, "
+                    f"got {section[sub]!r}"
+                )
+        cfg[key] = section
     return cfg
-
-
-def feature_cfg(cfg, key):
-    """Merged view of an optional feature block, defaulted.
-
-    load() already populates every block, so this just returns the live dict;
-    it exists for callers handed a config that predates these keys.
-    """
-    defaults = _FEATURE_DEFAULTS.get(key)
-    if defaults is None:
-        raise KeyError(f"unknown feature block: {key!r}")
-    section = cfg.get(key)
-    if not isinstance(section, dict):
-        return dict(defaults)
-    merged = dict(defaults)
-    merged.update(section)
-    return merged
 
 
 def load():
@@ -176,12 +162,10 @@ def load():
     _validate(cfg)
     # label/impact are display strings; provide safe fallbacks so a minimal
     # lane entry (id + port + script) still works, per the README.
-    for lane in cfg.get("lanes", []):
+    for lane in cfg.get("lanes") or []:
         lane.setdefault("label", lane["id"])
         lane.setdefault("impact", "")
         lane.setdefault("approx_mb", None)
-    # Optional per-lane log path (string); no validation beyond type.
-    for lane in cfg.get("lanes", []):
         log = lane.get("log")
         if log is not None and not isinstance(log, str):
             raise SystemExit(
@@ -196,7 +180,7 @@ def load():
 
 def web_path(cfg, key):
     """Absolute path to a web asset named in config['web'][key]."""
-    rel = cfg.get("web", {}).get(key)
+    rel = (cfg.get("web") or {}).get(key)
     if not rel:
         return None
     p = Path(os.path.expanduser(rel))
